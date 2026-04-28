@@ -1,0 +1,5 @@
+{
+  "name": "Planejador Escolar Inteligente",
+  "description": "Uma ferramenta para professores automatizarem o cronograma anual de conteúdos baseado no calendário escolar e dias de aula, com exportação para PDF personalizada.",
+  "requestFramePermissions": []
+}
