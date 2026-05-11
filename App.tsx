@@ -2,19 +2,25 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { createClient, User } from '@supabase/supabase-js';
 import { WEEKDAYS, TURMAS_OPTIONS, SHIFT_OPTIONS, DISCIPLINES, SCHOOL_LOGO_BASE64 } from './constants';
-import { SchoolSettings, PlanningRow, Holiday, CurriculumItem, School, Database, PlanDocument } from './types';
+import { SchoolSettings, PlanningRow, Holiday, CurriculumItem, School, Database, PlanDocument, SchoolYearSettings } from './types';
 import { formatDisplayDate, isHoliday } from './utils/dateUtils';
 import SchoolStructureSetup from './components/SchoolStructureSetup';
 import ScheduleSimulator from './components/ScheduleSimulator';
 import TeachersManager from './components/TeachersManager';
 import TeacherScheduleView from './components/TeacherScheduleView';
 import TeacherAvailability from './components/TeacherAvailability';
+import { AdminAnoLetivo } from './components/AdminAnoLetivo';
 
 // ACESSO MESTRE
 const MASTER_EMAIL = "bebeto.bgm@gmail.com"; 
 
-const supabaseUrl = 'https://vwpcseyurdtbhkhkftjn.supabase.co';
-const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ3cGNzZXl1cmR0YmhraGtmdGpuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk3MzE3MzUsImV4cCI6MjA4NTMwNzczNX0.c6JF9T7HIUsFYg3vEkbkptEVl_JO_d_-oaif6xb4gT8';
+// Configure isso nas configurações (Secrets) do seu ambiente
+const rawSupUrl = ((import.meta as any).env?.VITE_SUPABASE_URL || '').trim();
+const rawSupKey = ((import.meta as any).env?.VITE_SUPABASE_KEY || '').trim();
+
+const supabaseUrl = rawSupUrl ? rawSupUrl : 'https://vwpcseyurdtbhkhkftjn.supabase.co';
+const supabaseKey = rawSupKey ? rawSupKey : 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ3cGNzZXl1cmR0YmhraGtmdGpuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk3MzE3MzUsImV4cCI6MjA4NTMwNzczNX0.c6JF9T7HIUsFYg3vEkbkptEVl_JO_d_-oaif6xb4gT8';
+
 const supabase = createClient<Database>(supabaseUrl, supabaseKey);
 
 const getAIClient = (userKey?: string) => {
@@ -216,7 +222,30 @@ CREATE POLICY "Profiles visibilidade geral" ON profiles
 
 DROP POLICY IF EXISTS "Usuários editam próprio profile" ON profiles;
 CREATE POLICY "Usuários editam próprio profile" ON profiles
-  FOR UPDATE USING (id = auth.uid()); -- Apenas o próprio usuário edita seu perfil (Admin fará isso via superuser se necessário, ou adicione regra específica)
+  FOR UPDATE USING (id = auth.uid());
+
+create table if not exists teacher_availability (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references auth.users(id) on delete cascade,
+  school_id uuid references schools(id) on delete cascade,
+  availability_data jsonb not null default '{}'::jsonb,
+  updated_at timestamptz default now(),
+  unique(user_id, school_id)
+);
+ALTER TABLE teacher_availability DISABLE ROW LEVEL SECURITY;
+
+-- 3. Tabela de Configuração do Ano Letivo (Para o novo modal)
+create table if not exists school_year_settings (
+  id uuid default gen_random_uuid() primary key,
+  school_id uuid references schools(id) on delete cascade,
+  year int not null default 2026,
+  period_type text not null default 'trimestre',
+  periods jsonb not null default '[]'::jsonb,
+  ppp_events jsonb not null default '[]'::jsonb,
+  created_at timestamptz default now(),
+  unique(school_id, year)
+);
+ALTER TABLE school_year_settings DISABLE ROW LEVEL SECURITY; -- Apenas o próprio usuário edita seu perfil (Admin fará isso via superuser se necessário, ou adicione regra específica)
 `;
 
 const App: React.FC = () => {
@@ -232,12 +261,13 @@ const App: React.FC = () => {
     const { data } = await supabase.from('profiles').select('*').eq('id', userId).single();
     setUserProfile(data);
   };
-  const [adminTab, setAdminTab] = useState<'professores' | 'escolas' | 'planos' | 'estrutura' | 'horarios' | 'db_setup'>('professores');
+  const [adminTab, setAdminTab] = useState<'professores' | 'escolas' | 'planos' | 'estrutura' | 'horarios' | 'ano_letivo' | 'db_setup'>('professores');
   
   const [schools, setSchools] = useState<School[]>([]);
   const [teachers, setTeachers] = useState<any[]>([]);
   const [allPlans, setAllPlans] = useState<PlanDocument[]>([]);
   const [schoolsLoading, setSchoolsLoading] = useState(false);
+  const [yearSettings, setYearSettings] = useState<SchoolYearSettings | null>(null);
   const [plans, setPlans] = useState<PlanDocument[]>([]);
   const [fetchingPlans, setFetchingPlans] = useState(false);
   const [dbClasses, setDbClasses] = useState<string[]>([]); // Turmas vindas do banco
@@ -329,8 +359,31 @@ const App: React.FC = () => {
       if (schoolsData.length > 0 && !adminSelectedSchoolId) {
         setAdminSelectedSchoolId(schoolsData[0].id);
       }
-    } catch (err: any) { console.error(err.message); } finally { setSchoolsLoading(false); }
-  }, [adminSelectedSchoolId]);
+    } catch (err: any) {
+      console.error(err.message);
+    } finally {
+      setSchoolsLoading(false);
+    }
+  }, [supabase, adminSelectedSchoolId]);
+
+  const fetchYearSettings = useCallback(async (schoolId?: string, year?: number) => {
+    if (!schoolId || !year) return;
+    try {
+      const { data, error } = await supabase.from('school_year_settings')
+        .select('*')
+        .eq('school_id', schoolId)
+        .eq('year', year)
+        .maybeSingle(); // Not throwing error if it doesn't exist
+      
+      if (error) {
+        console.error("Erro ao buscar ano letivo do banco:", error.message);
+        return;
+      }
+      setYearSettings(data as SchoolYearSettings | null);
+    } catch (err: any) {
+      console.error(err);
+    }
+  }, [supabase]);
 
   const fetchTeachers = useCallback(async () => {
     if (!isMaster) return;
@@ -349,6 +402,7 @@ const App: React.FC = () => {
     if (!user) return;
     if (showLoading) setFetchingPlans(true);
     const { data, error } = await supabase.from('user_plans').select('*').eq('user_id', user.id).order('updated_at', { ascending: false });
+    if (error) console.error("Error fetching user plans:", error);
     if (!error) setPlans(data as PlanDocument[] || []);
     setFetchingPlans(false);
   }, [user]);
@@ -372,12 +426,14 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // Effect para atualizar as turmas quando mudar a escola no modal de novo plano
+  // Effect para atualizar as turmas e configuracoes quando mudar a escola no modal de novo plano
   useEffect(() => {
     if (newPlanData.schoolId) {
         fetchClassesForModal(newPlanData.schoolId);
+        // By default use 2026 for now, or new Date().getFullYear() later
+        fetchYearSettings(newPlanData.schoolId, 2026);
     }
-  }, [newPlanData.schoolId, fetchClassesForModal]);
+  }, [newPlanData.schoolId, fetchClassesForModal, fetchYearSettings]);
 
   // Inicializa o modal com a escola do usuário
   useEffect(() => {
@@ -455,7 +511,7 @@ const App: React.FC = () => {
       const school = schools.find(s => s.id === sid);
       const initialSettings: SchoolSettings = { 
         schoolId: school?.id, schoolName: school?.name || "Escola", cnpj: "00.000.000/0000-00", address: "Endereço", phone: "(00) 0000-0000",
-        teacherPhone: "", logoUrl: school?.logo_url || "", year: 2026, startDate: "2026-02-02", endDate: "2026-11-30", classDays: [1, 3], 
+        teacherPhone: "", logoUrl: school?.logo_url || "", year: yearSettings?.year || 2026, startDate: "2026-02-02", endDate: "2026-11-30", classDays: [1, 3], 
         teacherName: user.user_metadata?.full_name || "", course: "Ensino Fundamental", discipline: newPlanData.discipline, 
         organization: newPlanData.organization, shift: newPlanData.shift, methodology: DEFAULT_METHODOLOGY, evaluation: DEFAULT_EVALUATION, 
         holidays: [], pedagogicalCoordinator: school?.pedagogical_coordinator || "", director: school?.director || ""
@@ -489,20 +545,46 @@ const App: React.FC = () => {
     setSyncing(false);
   };
 
+  // Helper para resgatar configuracoes dinâmicas ou fallback
+  const getYearConfig = useCallback(() => {
+    const periods = (yearSettings?.periods && yearSettings.periods.length > 0) 
+      ? yearSettings.periods 
+      : [
+          { number: 1, start: TRIMESTER_RANGES[1].start, end: TRIMESTER_RANGES[1].end },
+          { number: 2, start: TRIMESTER_RANGES[2].start, end: TRIMESTER_RANGES[2].end },
+          { number: 3, start: TRIMESTER_RANGES[3].start, end: TRIMESTER_RANGES[3].end }
+        ];
+    
+    const pppEventsArr = yearSettings?.ppp_events || Object.keys(FIXED_PPP_EVENTS).map(date => ({
+      date,
+      ...FIXED_PPP_EVENTS[date]
+    }));
+
+    const periodType = yearSettings?.period_type || 'trimestre';
+    
+    return { periods, pppEventsArr, periodType };
+  }, [yearSettings]);
+
   // ALGORITMO DE DISTRIBUIÇÃO PROPORCIONAL
   const generatePlanning = useCallback(() => {
     if (!settings) return;
+    const { periods, pppEventsArr, periodType } = getYearConfig();
+
     const rows: PlanningRow[] = [];
     
     // 1. Identificar todos os dias válidos para aula no ano inteiro
     const availableLessonDates: string[] = [];
     
-    const start = new Date(TRIMESTER_RANGES[1].start + 'T00:00:00');
-    const end = new Date(TRIMESTER_RANGES[3].end + 'T23:59:59');
+    const start = new Date(periods[0].start + 'T00:00:00');
+    // Pegar o fim do último período
+    const end = new Date(periods[periods.length - 1].end + 'T23:59:59');
     let cursor = new Date(start);
 
     // Mapear dias fixos para evitar sobreposição
-    const fixedEventsMap = { ...FIXED_PPP_EVENTS };
+    const fixedEventsMap: Record<string, any> = {};
+    pppEventsArr.forEach(v => {
+      fixedEventsMap[v.date] = { chapter: v.chapter, topic: v.topic, learning: v.learning };
+    });
 
     if (settings.planningMode === 'monthly') {
       const monthlyContent = settings.monthlyContent || {};
@@ -573,9 +655,9 @@ const App: React.FC = () => {
         }
       });
 
-      // Add Trimester Headers
+      // Add Headers based on periods (Trimester/Bimestre)
       const finalRows: PlanningRow[] = [];
-      let currentTrimester = 0;
+      let currentPeriodNum = 0;
       
       tempRows.forEach(row => {
           let dateStr = '';
@@ -588,20 +670,29 @@ const App: React.FC = () => {
             dateStr = `${mKey}-${firstDay}`;
           }
 
-          let trimester = 1;
-          if (dateStr >= TRIMESTER_RANGES[2].start && dateStr < TRIMESTER_RANGES[3].start) trimester = 2;
-          else if (dateStr >= TRIMESTER_RANGES[3].start) trimester = 3;
+          let periodNum = 1;
+          for (const p of periods) {
+            if (dateStr >= p.start && dateStr <= p.end) {
+              periodNum = p.number;
+              break;
+            }
+          }
+          // fallback pra caso data seja posterior ao ultimo final (ex: final de ano)
+          if (dateStr > periods[periods.length - 1].end) {
+            periodNum = periods[periods.length - 1].number;
+          }
           
-          if (trimester !== currentTrimester) {
+          if (periodNum !== currentPeriodNum) {
+              const labelName = periodType === 'trimestre' ? 'TRIMESTRE' : 'BIMESTRE';
               finalRows.push({
-                  id: `trimester-header-${trimester}`,
-                  chapter: `${trimester}º TRIMESTRE`,
+                  id: `period-header-${periodNum}`,
+                  chapter: `${periodNum}º ${labelName}`,
                   topic: '',
                   essentialLearning: '',
                   status: 'Pendente',
                   dateScheduled: ''
               });
-              currentTrimester = trimester;
+              currentPeriodNum = periodNum;
           }
           finalRows.push(row);
       });
@@ -667,7 +758,14 @@ const App: React.FC = () => {
     }
   }, [settings, curriculum]);
 
-  useEffect(() => { if (view === 'editor') generatePlanning(); }, [curriculum, generatePlanning, view]);
+  useEffect(() => { 
+    if (view === 'editor') {
+      if (settings?.schoolId && settings?.year) {
+        fetchYearSettings(settings.schoolId, settings.year);
+      }
+      generatePlanning(); 
+    }
+  }, [curriculum, generatePlanning, view, settings?.schoolId, settings?.year, fetchYearSettings]);
 
   const handleAdminUpdateTeacher = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -878,10 +976,10 @@ const App: React.FC = () => {
     setPlanToDuplicate(plan);
     setDuplicateData({
         organization: '',
-        shift: plan.settings.shift,
-        classDays: plan.settings.classDays || []
+        shift: plan.settings?.shift || '',
+        classDays: plan.settings?.classDays || []
     });
-    if (plan.settings.schoolId) {
+    if (plan.settings?.schoolId) {
         fetchClassesForModal(plan.settings.schoolId);
     }
     setIsDuplicateModalOpen(true);
@@ -1086,9 +1184,9 @@ const App: React.FC = () => {
       {view === 'admin' && isMaster ? (
         <main className="space-y-8 animate-in fade-in">
            <div className="flex gap-4 border-b">
-              {(['usuarios', 'professores', 'escolas', 'planos', 'estrutura', 'horarios', 'db_setup'] as const).map(tab => (
+              {(['usuarios', 'professores', 'escolas', 'planos', 'estrutura', 'horarios', 'ano_letivo', 'db_setup'] as const).map(tab => (
                  <button key={tab} onClick={() => setAdminTab(tab as any)} className={`pb-4 px-4 font-black text-xs uppercase tracking-widest border-b-2 transition-all ${adminTab === tab ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
-                    {tab === 'db_setup' ? 'CONFIG BD' : tab === 'estrutura' ? 'ESTRUTURA' : tab === 'horarios' ? 'HORÁRIOS' : tab}
+                    {tab === 'db_setup' ? 'CONFIG BD' : tab === 'estrutura' ? 'ESTRUTURA' : tab === 'horarios' ? 'HORÁRIOS' : tab === 'ano_letivo' ? 'ANO LETIVO' : tab}
                  </button>
               ))}
            </div>
@@ -1173,7 +1271,7 @@ const App: React.FC = () => {
                           return (
                              <tr key={p.id} className="hover:bg-slate-50">
                                 <td className="p-4 text-xs font-black text-slate-700">{prof?.full_name || 'Usuário Não Encontrado'}</td>
-                                <td className="p-4"><p className="text-xs font-bold text-slate-900">{p.settings.organization}</p><p className="text-[10px] text-slate-400">{p.settings.discipline}</p></td>
+                                <td className="p-4"><p className="text-xs font-bold text-slate-900">{p.settings?.organization}</p><p className="text-[10px] text-slate-400">{p.settings?.discipline}</p></td>
                                 <td className="p-4 text-xs text-slate-500">{p.updated_at ? new Date(p.updated_at).toLocaleDateString() : '---'}</td>
                                 <td className="p-4 text-right"><button onClick={() => openEditor(p)} className="text-indigo-600 text-[10px] font-black uppercase hover:underline">Ver Detalhes</button></td>
                              </tr>
@@ -1208,6 +1306,14 @@ const App: React.FC = () => {
                    <div className="p-10 text-center text-slate-400 font-bold uppercase text-xs">Selecione uma escola acima para configurar a estrutura.</div>
                 )}
              </>
+           )}
+
+           {adminTab === 'ano_letivo' && (
+              <AdminAnoLetivo 
+                 supabase={supabase} 
+                 schools={schools} 
+                 onShowNotify={showNotify} 
+              />
            )}
 
            {adminTab === 'db_setup' && (
@@ -1302,7 +1408,7 @@ ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;`}</pre>
                         <button onClick={(e) => handleDuplicateClick(e, p)} className="w-8 h-8 rounded-full bg-emerald-50 text-emerald-500 hover:bg-emerald-600 hover:text-white flex items-center justify-center transition-all" title="Duplicar para outra turma"><i className="fa-solid fa-copy"></i></button>
                         <button onClick={(e) => handleDeletePlan(p.id, e)} className="w-8 h-8 rounded-full bg-rose-50 text-rose-500 hover:bg-rose-600 hover:text-white flex items-center justify-center transition-all" title="Excluir"><i className="fa-solid fa-trash-can"></i></button>
                     </div>
-                    <div><span className="bg-indigo-50 text-indigo-600 text-[10px] font-black px-3 py-1 rounded-full uppercase">{p.settings.shift}</span><h4 className="text-2xl font-black text-slate-900 mt-4 leading-none">{p.settings.organization}</h4><p className="text-xs font-bold text-slate-400 uppercase mt-2">{p.settings.discipline}</p></div>
+                    <div><span className="bg-indigo-50 text-indigo-600 text-[10px] font-black px-3 py-1 rounded-full uppercase">{p.settings?.shift}</span><h4 className="text-2xl font-black text-slate-900 mt-4 leading-none">{p.settings?.organization}</h4><p className="text-xs font-bold text-slate-400 uppercase mt-2">{p.settings?.discipline}</p></div>
                   </div>
                 ))}
                 {plans.length === 0 && !fetchingPlans && (
@@ -1514,65 +1620,93 @@ ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;`}</pre>
       )}
 
       {/* MODAL IMPORTAÇÃO MENSAL */}
-      {isMonthlyModalOpen && settings && (
+      {isMonthlyModalOpen && settings && (() => {
+        const { periods, pppEventsArr, periodType } = getYearConfig();
+        const pppDates = new Set(pppEventsArr.map(p => p.date));
+
+        return (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
            <div className="bg-white rounded-[2rem] w-full max-w-4xl p-8 shadow-2xl animate-in zoom-in-95 flex flex-col max-h-[90vh]">
               <div className="flex justify-between items-center mb-6">
                 <div>
                    <h3 className="text-xl font-black text-slate-900 uppercase">Planejamento Mensal</h3>
-                   <p className="text-xs text-slate-400 font-bold">Distribua o conteúdo por meses e trimesters.</p>
+                   <p className="text-xs text-slate-400 font-bold">Distribua o conteúdo por meses e {periodType}s.</p>
                 </div>
                 <button onClick={() => setIsMonthlyModalOpen(false)} className="w-8 h-8 rounded-full bg-white border text-slate-400 hover:text-slate-900 flex items-center justify-center"><i className="fa-solid fa-times"></i></button>
               </div>
               
               <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar space-y-8">
-                {[1, 2, 3].map(trim => (
-                  <div key={trim} className="space-y-4">
-                    <div className="bg-indigo-50 p-4 rounded-2xl border border-indigo-100">
-                      <h4 className="text-sm font-black text-indigo-600 uppercase tracking-widest">{trim}º Trimestre</h4>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      {MONTHS_BR.filter(m => m.trimester === trim).map(month => {
-                        const monthKey = `2026-${month.id}`;
-                        
-                        // Calcular datas de aula para este mês
-                        const classDates: string[] = [];
-                        const start = new Date(`${monthKey}-01T00:00:00`);
-                        const end = new Date(new Date(start).setMonth(start.getMonth() + 1) - 1);
-                        let cursor = new Date(start);
-                        while (cursor <= end) {
-                          const ds = cursor.toISOString().split('T')[0];
-                          if (settings.classDays.includes(cursor.getDay()) && !isHoliday(cursor, settings.holidays) && !FIXED_PPP_EVENTS[ds]) {
-                            classDates.push(ds.split('-')[2]);
-                          }
-                          cursor.setDate(cursor.getDate() + 1);
-                        }
+                {periods.map(period => {
+                  const labelName = periodType === 'trimestre' ? 'Trimestre' : 'Bimestre';
+                  
+                  // Identificar os meses do periodo
+                  const startD = new Date(period.start + 'T00:00:00');
+                  const endD = new Date(period.end + 'T23:59:59');
+                  const monthsInPeriod: { id: string; name: string; fullKey: string }[] = [];
+                  const curMonth = new Date(startD);
+                  curMonth.setDate(1); // Mover pro inicio do mes pra iterar livremente
+                  while (curMonth <= endD || (curMonth.getMonth() === endD.getMonth() && curMonth.getFullYear() === endD.getFullYear())) {
+                     const ds = curMonth.toISOString().split('T')[0];
+                     const mId = ds.substring(5, 7);
+                     const y = ds.substring(0, 4);
+                     monthsInPeriod.push({
+                       id: mId,
+                       name: MONTHS_BR.find(m => m.id === mId)?.name || mId,
+                       fullKey: `${y}-${mId}`
+                     });
+                     curMonth.setMonth(curMonth.getMonth() + 1);
+                  }
 
-                        return (
-                          <div key={month.id} className="bg-slate-50 p-6 rounded-3xl border border-slate-100 space-y-3">
-                            <div className="flex justify-between items-center">
-                              <h5 className="text-xs font-black text-slate-900 uppercase">{month.name}</h5>
-                              <span className="text-[9px] font-bold text-slate-400 uppercase">Datas: {classDates.join(', ')}</span>
+                  return (
+                    <div key={period.number} className="space-y-4">
+                      <div className="bg-indigo-50 p-4 rounded-2xl border border-indigo-100">
+                        <h4 className="text-sm font-black text-indigo-600 uppercase tracking-widest">{period.number}º {labelName}</h4>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {monthsInPeriod.map(month => {
+                          const monthKey = month.fullKey;
+                          
+                          // Calcular datas de aula para este mês
+                          const classDates: string[] = [];
+                          const mStart = new Date(`${monthKey}-01T00:00:00`);
+                          const mEnd = new Date(new Date(mStart).setMonth(mStart.getMonth() + 1) - 1);
+                          let cursor = new Date(mStart);
+                          while (cursor <= mEnd) {
+                            const ds = cursor.toISOString().split('T')[0];
+                            // Somente considerar se a data está de fato dentro de 'startD' e 'endD' ou apenas filtrar por conteudo?
+                            // O ideal eh filtrar o que for true. Mas os params sao globais, deixamos o check de ppp:
+                            if (settings.classDays.includes(cursor.getDay()) && !isHoliday(cursor, settings.holidays) && !pppDates.has(ds)) {
+                              classDates.push(ds.split('-')[2]);
+                            }
+                            cursor.setDate(cursor.getDate() + 1);
+                          }
+
+                          return (
+                            <div key={month.id} className="bg-slate-50 p-6 rounded-3xl border border-slate-100 space-y-3">
+                              <div className="flex justify-between items-center">
+                                <h5 className="text-xs font-black text-slate-900 uppercase">{month.name}</h5>
+                                <span className="text-[9px] font-bold text-slate-400 uppercase break-normal">Datas válidas: {classDates.length}</span>
+                              </div>
+                              <textarea 
+                                value={settings.monthlyContent?.[monthKey] || ''} 
+                                onChange={e => {
+                                  const val = e.target.value;
+                                  setSettings(prev => {
+                                    if (!prev) return null;
+                                    const newMonthly = { ...(prev.monthlyContent || {}), [monthKey]: val };
+                                    return { ...prev, monthlyContent: newMonthly };
+                                  });
+                                }}
+                                className="w-full bg-white border p-4 rounded-2xl text-[11px] font-bold text-slate-700 outline-none min-h-[120px] resize-none leading-relaxed" 
+                                placeholder={`Cole o conteúdo de ${month.name} aqui...`}
+                              />
                             </div>
-                            <textarea 
-                              value={settings.monthlyContent?.[monthKey] || ''} 
-                              onChange={e => {
-                                const val = e.target.value;
-                                setSettings(prev => {
-                                  if (!prev) return null;
-                                  const newMonthly = { ...(prev.monthlyContent || {}), [monthKey]: val };
-                                  return { ...prev, monthlyContent: newMonthly };
-                                });
-                              }}
-                              className="w-full bg-white border p-4 rounded-2xl text-[11px] font-bold text-slate-700 outline-none min-h-[120px] resize-none leading-relaxed" 
-                              placeholder={`Cole o conteúdo de ${month.name} aqui...`}
-                            />
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               <div className="flex justify-end gap-3 pt-6 border-t mt-6">
@@ -1580,76 +1714,8 @@ ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;`}</pre>
               </div>
            </div>
         </div>
-      )}
-
-      {/* MODAL IMPORTAÇÃO MENSAL */}
-      {isMonthlyModalOpen && settings && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-           <div className="bg-white rounded-[2rem] w-full max-w-4xl p-8 shadow-2xl animate-in zoom-in-95 flex flex-col max-h-[90vh]">
-              <div className="flex justify-between items-center mb-6">
-                <div>
-                   <h3 className="text-xl font-black text-slate-900 uppercase">Planejamento Mensal</h3>
-                   <p className="text-xs text-slate-400 font-bold">Distribua o conteúdo por meses e trimesters.</p>
-                </div>
-                <button onClick={() => setIsMonthlyModalOpen(false)} className="w-8 h-8 rounded-full bg-white border text-slate-400 hover:text-slate-900 flex items-center justify-center"><i className="fa-solid fa-times"></i></button>
-              </div>
-              
-              <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar space-y-8">
-                {[1, 2, 3].map(trim => (
-                  <div key={trim} className="space-y-4">
-                    <div className="bg-indigo-50 p-4 rounded-2xl border border-indigo-100">
-                      <h4 className="text-sm font-black text-indigo-600 uppercase tracking-widest">{trim}º Trimestre</h4>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      {MONTHS_BR.filter(m => m.trimester === trim).map(month => {
-                        const monthKey = `2026-${month.id}`;
-                        
-                        // Calcular datas de aula para este mês
-                        const classDates: string[] = [];
-                        const start = new Date(`${monthKey}-01T00:00:00`);
-                        const end = new Date(new Date(start).setMonth(start.getMonth() + 1) - 1);
-                        let cursor = new Date(start);
-                        while (cursor <= end) {
-                          const ds = cursor.toISOString().split('T')[0];
-                          if (settings.classDays.includes(cursor.getDay()) && !isHoliday(cursor, settings.holidays) && !FIXED_PPP_EVENTS[ds]) {
-                            classDates.push(ds.split('-')[2]);
-                          }
-                          cursor.setDate(cursor.getDate() + 1);
-                        }
-
-                        return (
-                          <div key={month.id} className="bg-slate-50 p-6 rounded-3xl border border-slate-100 space-y-3">
-                            <div className="flex justify-between items-center">
-                              <h5 className="text-xs font-black text-slate-900 uppercase">{month.name}</h5>
-                              <span className="text-[9px] font-bold text-slate-400 uppercase">Datas: {classDates.join(', ')}</span>
-                            </div>
-                            <textarea 
-                              value={settings.monthlyContent?.[monthKey] || ''} 
-                              onChange={e => {
-                                const val = e.target.value;
-                                setSettings(prev => {
-                                  if (!prev) return null;
-                                  const newMonthly = { ...(prev.monthlyContent || {}), [monthKey]: val };
-                                  return { ...prev, monthlyContent: newMonthly };
-                                });
-                              }}
-                              className="w-full bg-white border p-4 rounded-2xl text-[11px] font-bold text-slate-700 outline-none min-h-[120px] resize-none leading-relaxed" 
-                              placeholder={`Cole o conteúdo de ${month.name} aqui...`}
-                            />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="flex justify-end gap-3 pt-6 border-t mt-6">
-                 <button onClick={() => setIsMonthlyModalOpen(false)} className="bg-slate-900 text-white px-8 py-3 rounded-xl font-black text-xs uppercase hover:bg-slate-800 shadow-lg">Concluir</button>
-              </div>
-           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* MODAL IMPORTAÇÃO DE PLANEJAMENTO (IA) */}
       {isImportModalOpen && (
@@ -1764,9 +1830,25 @@ ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;`}</pre>
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[20000] flex items-center justify-center p-4">
           <div className="bg-white rounded-[2rem] p-8 w-full max-w-md shadow-2xl animate-in zoom-in-95">
             <h3 className="text-xl font-black text-slate-900 mb-6 uppercase">Editar Informações Base</h3>
-            <form onSubmit={(e) => {
+            <form onSubmit={async (e) => {
                e.preventDefault();
-               setSettings(prev => prev ? { ...prev, discipline: editPlanData.discipline, organization: editPlanData.organization, shift: editPlanData.shift } : prev);
+               const newSettings = Object.assign({}, settings, { discipline: editPlanData.discipline, organization: editPlanData.organization, shift: editPlanData.shift });
+               setSettings(newSettings);
+               
+               if (activePlanId) {
+                  setSyncing(true);
+                  const { error } = await (supabase.from('user_plans') as any).update({ 
+                     settings: newSettings as any 
+                  }).eq('id', activePlanId);
+                  
+                  if (!error) {
+                     showNotify("Informações atualizadas no banco!", "success");
+                     setPlans(prev => prev.map(p => p.id === activePlanId ? { ...p, settings: newSettings } : p));
+                  } else {
+                     showNotify("Erro ao salvar informações.", "error");
+                  }
+                  setSyncing(false);
+               }
                setIsEditSettingsModalOpen(false);
             }} className="space-y-4">
                <div>
@@ -1853,14 +1935,14 @@ ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;`}</pre>
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-[2rem] p-8 w-full max-w-md shadow-2xl animate-in zoom-in-95">
             <h3 className="text-xl font-black text-slate-900 mb-2 uppercase">Duplicar Planejamento</h3>
-            <p className="text-xs text-slate-500 font-bold mb-6">Copiando de: <span className="text-indigo-600">{planToDuplicate.settings.organization}</span></p>
+            <p className="text-xs text-slate-500 font-bold mb-6">Copiando de: <span className="text-indigo-600">{planToDuplicate.settings?.organization}</span></p>
             
             <form onSubmit={handleDuplicateSubmit} className="space-y-4">
               <div>
                 <label className="text-[10px] font-black uppercase text-slate-400 block mb-1">Nova Turma</label>
                 <select required value={duplicateData.organization || ''} onChange={e => setDuplicateData({...duplicateData, organization: e.target.value})} className="w-full bg-slate-50 border p-3 rounded-xl text-xs font-bold">
                     <option value="">Selecione a turma de destino...</option>
-                    {dbClasses.filter(c => c !== planToDuplicate.settings.organization).map(t => <option key={t} value={t}>{t}</option>)}
+                    {dbClasses.filter(c => c !== planToDuplicate.settings?.organization).map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
               </div>
 

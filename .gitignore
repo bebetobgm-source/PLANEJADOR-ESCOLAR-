@@ -22,3 +22,5 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+.env
+.env.local -rI --exclude-dir=logs --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=dist-ssr --exclude-dir=.idea --exclude-dir=.DS_Store --exclude-dir=node_modules --exclude-dir=.next --exclude-dir=build --exclude-dir=out --exclude-dir=dist --exclude-dir=.DS_Store

@@ -35,8 +35,10 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
   const [selectedClass, setSelectedClass] = useState<string>('');
   const [selectedShift, setSelectedShift] = useState<SchoolShift | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
 
   const handleAutoGenerate = async () => {
+    setShowConfirm(false);
     setGenerating(true);
     onShowNotify("Gerando grade horária... Isso pode levar alguns segundos.", "info");
 
@@ -71,21 +73,18 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
         }
       });
 
+      if (lessonsToPlace.length === 0) {
+         onShowNotify("Nenhuma disciplina encontrada na matriz curricular. Vá em 'Estrutura' para configurar a matriz antes de gerar horários.", "error");
+         setGenerating(false);
+         return;
+      }
+
       // 3. Estruturar a grade vazia [day][period][className] = LessonToPlace | null
       // Vamos assumir dias de 1 a 5 (segunda a sexta)
       // Array para acompanhar onde os professores estão a cada slot temporal
       const teacherSlots = new Map<string, string>(); // chane para: `teacherId_day_period` -> `className`
 
       const newSchedules: any[] = [];
-
-      // Função utilitária para verificar disponibilidade
-      const isTeacherAvailable = (teacherId: string, day: number, period: number) => {
-        const teacher = teachers.find(t => t.id === teacherId);
-        if (!teacher || !teacher.availability) return true; // Se não tiver config, assume livre
-        const dayAvail = teacher.availability[day.toString()];
-        if (dayAvail && dayAvail[period] === false) return false;
-        return true;
-      };
 
       // Embaralhar as aulas para evitar padrões fixos e dar chance de resolver melhor
       lessonsToPlace.sort(() => Math.random() - 0.5);
@@ -188,8 +187,11 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
         onShowNotify(`Geração perfeita! ${bestPlacement.length} aulas posicionadas na grade sem conflitos.`, "success");
       }
       
-      // Atualiza o estado
-      setSchedules(bestPlacement);
+      // Atualiza o estado lendo do banco para pegar os IDs gerados
+      const { data: generatedSchedules } = await supabase.from('class_schedules').select('*').eq('school_id', schoolId);
+      if (generatedSchedules) {
+        setSchedules(generatedSchedules);
+      }
       
     } catch (error: any) {
       onShowNotify(error.message, "error");
@@ -207,14 +209,16 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
         { data: matrixData },
         { data: teacherData },
         { data: assignData },
-        { data: schedData }
+        { data: schedData },
+        { data: availData }
       ] = await Promise.all([
         supabase.from('school_shifts').select('*').eq('school_id', schoolId).order('name'),
         supabase.from('school_classes').select('*').eq('school_id', schoolId).order('name'),
         supabase.from('class_matrix').select('*').eq('school_id', schoolId),
         supabase.from('school_teachers').select('*').eq('school_id', schoolId).order('name'),
         supabase.from('teacher_assignments').select('*').eq('school_id', schoolId),
-        supabase.from('class_schedules').select('*').eq('school_id', schoolId)
+        supabase.from('class_schedules').select('*').eq('school_id', schoolId),
+        supabase.from('teacher_availability').select('*').eq('school_id', schoolId)
       ]);
 
       if (shiftData) setShifts(shiftData);
@@ -226,6 +230,7 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
       if (teacherData) setTeachers(teacherData);
       if (assignData) setAssignments(assignData);
       if (schedData) setSchedules(schedData);
+      if (availData) setAvailabilities(availData);
 
     } catch (error: any) {
       onShowNotify(error.message, 'error');
@@ -307,6 +312,22 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
     }
   };
 
+  const isTeacherAvailable = (teacherId: string, day: number, period: number) => {
+    const teacher = teachers.find(t => t.id === teacherId);
+    if (!teacher) return true;
+
+    // Buscar disponibilidade na tabela correta (teacher_availability) via availabilities state
+    const avail = availabilities.find(
+      a => a.user_id === teacher.auth_id
+    );
+
+    if (!avail?.availability_data) return true; // Se não tiver config, assume livre
+
+    const dayAvail = avail.availability_data[day.toString()];
+    if (dayAvail && dayAvail[period] === false) return false;
+    return true;
+  };
+
   const getTeacherForSubject = (subject: string) => {
     const assign = assignments.find(a => a.class_name === selectedClass && a.subject === subject);
     return teachers.find(t => t.id === assign?.teacher_id);
@@ -321,12 +342,8 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
     if (!teacherId) return null;
 
     // 1. Check Teacher Availability
-    const teacher = teachers.find(t => t.id === teacherId);
-    if (teacher?.availability) {
-      const dayAvail = teacher.availability[day.toString()];
-      if (dayAvail && dayAvail[period] === false) {
-        return "Professor indisponível neste horário.";
-      }
+    if (!isTeacherAvailable(teacherId, day, period)) {
+      return "Professor indisponível neste horário.";
     }
 
     // 2. Check Teacher Double Booking (in other classes)
@@ -368,7 +385,12 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
             </select>
           </div>
           <button 
-            onClick={handleAutoGenerate} 
+            type="button"
+            onClick={(e) => {
+               e.preventDefault();
+               console.log("Clicou no botão Gerador Automático");
+               setShowConfirm(true);
+            }} 
             disabled={generating}
             className="bg-emerald-600 text-white mt-4 px-4 py-3 rounded-xl text-[10px] font-black uppercase shadow-lg hover:bg-emerald-700 transition-all flex items-center gap-2"
           >
@@ -480,6 +502,25 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {showConfirm && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-[2rem] p-8 w-full max-w-sm shadow-2xl animate-in zoom-in-95">
+            <h3 className="text-lg font-black text-slate-900 mb-2">Gerador Automático</h3>
+            <p className="text-xs text-slate-500 font-bold mb-6">
+              Isso vai apagar a grade atual de todas as turmas e gerar uma nova grade do zero. Deseja continuar?
+            </p>
+            <div className="flex gap-3">
+              <button onClick={() => setShowConfirm(false)} className="flex-1 bg-slate-100 text-slate-600 p-3 rounded-xl font-black text-[10px] uppercase">
+                Cancelar
+              </button>
+              <button onClick={handleAutoGenerate} className="flex-1 bg-emerald-600 text-white p-3 rounded-xl font-black text-[10px] uppercase shadow-lg hover:bg-emerald-700">
+                Confirmar
+              </button>
+            </div>
           </div>
         </div>
       )}

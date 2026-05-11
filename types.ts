@@ -1,5 +1,15 @@
 
 
+export interface SchoolYearSettings {
+  id: string;
+  school_id: string;
+  year: number;
+  period_type: 'trimestre' | 'bimestre';
+  periods: { number: number; start: string; end: string }[];
+  ppp_events: { date: string; chapter: string; topic: string; learning: string }[];
+  created_at?: string;
+}
+
 export interface School {
   id: string;
   name: string;
@@ -167,6 +177,11 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
+      school_year_settings: {
+        Row: SchoolYearSettings
+        Insert: Omit<SchoolYearSettings, 'id' | 'created_at'>
+        Update: Partial<SchoolYearSettings>
+      }
       schools: {
         Row: School
         Insert: Partial<School>
