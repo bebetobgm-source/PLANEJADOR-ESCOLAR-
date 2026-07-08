@@ -10,6 +10,7 @@ import TeachersManager from './components/TeachersManager';
 import TeacherScheduleView from './components/TeacherScheduleView';
 import TeacherAvailability from './components/TeacherAvailability';
 import { AdminAnoLetivo } from './components/AdminAnoLetivo';
+import { SalesPage } from './components/SalesPage';
 
 // ACESSO MESTRE
 const MASTER_EMAIL = "bebeto.bgm@gmail.com"; 
@@ -250,6 +251,7 @@ ALTER TABLE school_year_settings DISABLE ROW LEVEL SECURITY; -- Apenas o própri
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
+  const [showSalesPage, setShowSalesPage] = useState(true);
   const [authMode, setAuthMode] = useState<'login' | 'signup' | 'success'>('login');
   const [authLoading, setAuthLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -393,7 +395,7 @@ const App: React.FC = () => {
 
   const fetchAllPlans = useCallback(async () => {
     if (!isMaster) return;
-    const { data, error } = await supabase.from('user_plans').select('*').order('updated_at', { ascending: false });
+    const { data, error } = await supabase.from('user_plans').select('*').order('updated_at', { ascending: false }).limit(100);
     if (error) console.error("Error fetching admin plans:", error);
     if (!error) setAllPlans(data as PlanDocument[] || []);
   }, [isMaster]);
@@ -1131,37 +1133,69 @@ const App: React.FC = () => {
 
   if (authLoading) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><i className="fa-solid fa-circle-notch fa-spin text-4xl text-indigo-600"></i></div>;
   
-  if (!user) return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
-      <div className="w-full max-w-lg bg-white rounded-[2.5rem] shadow-2xl p-10 overflow-hidden">
-        <div className="bg-indigo-600 -m-10 mb-10 p-10 text-white text-center rounded-t-[2.5rem]"><h1 className="text-2xl font-black uppercase tracking-tight">Portal Docente</h1></div>
-        {authMode === 'success' ? (
-          <div className="text-center py-8"><h2 className="text-xl font-black text-slate-900 uppercase mb-2">Sucesso!</h2><button onClick={() => setAuthMode('login')} className="w-full bg-indigo-600 text-white p-5 rounded-2xl font-black text-xs uppercase shadow-lg">Ir para Login</button></div>
-        ) : (
-          <form onSubmit={handleAuth} className="space-y-4 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
-            <input required type="email" placeholder="E-mail profissional" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="w-full bg-slate-50 border p-4 rounded-2xl text-xs font-bold text-slate-900 outline-none" />
-            <input required type="password" placeholder="Senha" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} className="w-full bg-slate-50 border p-4 rounded-2xl text-xs font-bold text-slate-900 outline-none" />
-            {authMode === 'signup' && (
-              <>
-                <input required placeholder="Nome Completo" value={formData.fullName} onChange={e => setFormData({...formData, fullName: e.target.value})} className="w-full bg-slate-50 border p-4 rounded-2xl text-xs font-bold text-slate-900 outline-none" />
-                <select required value={formData.schoolId || ''} onChange={e => setFormData({...formData, schoolId: e.target.value})} className="w-full bg-slate-50 border p-4 rounded-2xl text-xs font-bold text-slate-900 outline-none">
-                  <option value="">Selecione sua escola...</option>
-                  {schools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
-                <div className="grid grid-cols-2 gap-2 pt-2">
-                  {DISCIPLINES.map(disc => (
-                    <button key={disc} type="button" onClick={() => handleToggleDiscipline(disc)} className={`text-left px-4 py-3 rounded-xl text-[10px] font-black uppercase border ${formData.selectedDisciplines.includes(disc) ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-400'}`}>{disc}</button>
-                  ))}
-                </div>
-              </>
-            )}
-            <button type="submit" className="w-full bg-indigo-600 text-white p-5 rounded-2xl font-black text-xs uppercase shadow-lg">{authMode === 'login' ? 'Entrar' : 'Cadastrar'}</button>
-            <button type="button" onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')} className="w-full text-[10px] font-black text-slate-400 text-center uppercase mt-4">{authMode === 'login' ? 'Criar nova conta' : 'Já tenho conta'}</button>
-          </form>
-        )}
+  if (!user) {
+    if (showSalesPage) {
+      return (
+        <SalesPage 
+          onLoginClick={() => {
+            setAuthMode('login');
+            setShowSalesPage(false);
+          }} 
+          onSignupClick={() => {
+            setAuthMode('signup');
+            setShowSalesPage(false);
+          }} 
+        />
+      );
+    }
+
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-6 relative">
+        {/* Back Button */}
+        <button
+          onClick={() => setShowSalesPage(true)}
+          className="absolute top-6 left-6 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 px-5 py-3 rounded-2xl text-xs font-black uppercase tracking-wider flex items-center gap-2 shadow-sm transition-all"
+        >
+          <i className="fa-solid fa-arrow-left"></i> Voltar para Home
+        </button>
+
+        <div className="w-full max-w-lg bg-white rounded-[2.5rem] shadow-2xl p-10 overflow-hidden mt-12">
+          <div className="bg-indigo-600 -m-10 mb-10 p-10 text-white text-center rounded-t-[2.5rem]">
+            <h1 className="text-2xl font-black uppercase tracking-tight">Portal Docente</h1>
+            <p className="text-xs text-indigo-100 font-bold mt-1 uppercase tracking-wider">Acesse sua Conta Acadêmica</p>
+          </div>
+          
+          {authMode === 'success' ? (
+            <div className="text-center py-8">
+              <h2 className="text-xl font-black text-slate-900 uppercase mb-2">Sucesso!</h2>
+              <button onClick={() => setAuthMode('login')} className="w-full bg-indigo-600 text-white p-5 rounded-2xl font-black text-xs uppercase shadow-lg">Ir para Login</button>
+            </div>
+          ) : (
+            <form onSubmit={handleAuth} className="space-y-4 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
+              <input required type="email" placeholder="E-mail profissional" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="w-full bg-slate-50 border p-4 rounded-2xl text-xs font-bold text-slate-900 outline-none" />
+              <input required type="password" placeholder="Senha" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} className="w-full bg-slate-50 border p-4 rounded-2xl text-xs font-bold text-slate-900 outline-none" />
+              {authMode === 'signup' && (
+                <>
+                  <input required placeholder="Nome Completo" value={formData.fullName} onChange={e => setFormData({...formData, fullName: e.target.value})} className="w-full bg-slate-50 border p-4 rounded-2xl text-xs font-bold text-slate-900 outline-none" />
+                  <select required value={formData.schoolId || ''} onChange={e => setFormData({...formData, schoolId: e.target.value})} className="w-full bg-slate-50 border p-4 rounded-2xl text-xs font-bold text-slate-900 outline-none">
+                    <option value="">Selecione sua escola...</option>
+                    {schools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                  <div className="grid grid-cols-2 gap-2 pt-2">
+                    {DISCIPLINES.map(disc => (
+                      <button key={disc} type="button" onClick={() => handleToggleDiscipline(disc)} className={`text-left px-4 py-3 rounded-xl text-[10px] font-black uppercase border ${formData.selectedDisciplines.includes(disc) ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-400'}`}>{disc}</button>
+                    ))}
+                  </div>
+                </>
+              )}
+              <button type="submit" className="w-full bg-indigo-600 text-white p-5 rounded-2xl font-black text-xs uppercase shadow-lg">{authMode === 'login' ? 'Entrar' : 'Cadastrar'}</button>
+              <button type="button" onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')} className="w-full text-[10px] font-black text-slate-400 text-center uppercase mt-4">{authMode === 'login' ? 'Criar nova conta' : 'Já tenho conta'}</button>
+            </form>
+          )}
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-10 font-sans text-slate-800 bg-[#FBFBFE] min-h-screen">
