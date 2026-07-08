@@ -277,6 +277,8 @@ const App: React.FC = () => {
   // Estados de Edição Admin
   const [editingTeacher, setEditingTeacher] = useState<any | null>(null);
   const [editingSchool, setEditingSchool] = useState<School | null>(null);
+  const [isCreateSchoolModalOpen, setIsCreateSchoolModalOpen] = useState(false);
+  const [newSchoolData, setNewSchoolData] = useState({ name: '', director: '', pedagogical_coordinator: '', logo_url: '' });
   const [adminSelectedSchoolId, setAdminSelectedSchoolId] = useState<string>('');
 
   // Estados de Edição e Criação Docente
@@ -815,6 +817,46 @@ const App: React.FC = () => {
     setSyncing(false);
   };
 
+  const handleAdminCreateSchool = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newSchoolData.name.trim()) return;
+    setSyncing(true);
+    const { data, error } = await (supabase.from('schools') as any).insert({
+      name: newSchoolData.name,
+      director: newSchoolData.director,
+      pedagogical_coordinator: newSchoolData.pedagogical_coordinator,
+      logo_url: newSchoolData.logo_url
+    }).select();
+
+    if (!error && data) {
+      showNotify("Escola criada com sucesso!", "success");
+      setSchools(prev => [...prev, data[0] as School]);
+      setNewSchoolData({ name: '', director: '', pedagogical_coordinator: '', logo_url: '' });
+      setIsCreateSchoolModalOpen(false);
+    } else {
+      showNotify(error?.message || "Erro ao criar escola.", "error");
+    }
+    setSyncing(false);
+  };
+
+  const handleAdminDeleteSchool = (id: string) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: "Excluir Escola",
+      message: "Remover esta escola permanentemente? Isso removerá todos os seus turnos, turmas, professores e dados vinculados.",
+      onConfirm: async () => {
+        const { error } = await (supabase.from('schools') as any).delete().eq('id', id);
+        if (!error) {
+          setSchools(prev => prev.filter(s => s.id !== id));
+          showNotify("Escola removida.", "success");
+        } else {
+          showNotify(error.message, "error");
+        }
+        setConfirmDialog(null);
+      }
+    });
+  };
+
   const exportToPDF = () => {
     if (!settings) return;
     const { jsPDF } = (window as any).jspdf;
@@ -1275,16 +1317,32 @@ const App: React.FC = () => {
              </>
            )}
 
-           {adminTab === 'escolas' && (
+           {adminTab === 'escolas' && ( // ESCOLAS LIST
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                 {schools.map(s => (
+                 <div className="bg-slate-50 border border-dashed border-slate-300 p-6 rounded-[2rem] shadow-sm flex flex-col justify-between min-h-[220px]">
+                     <div className="flex flex-col items-center text-center mt-2">
+                        <div className="w-12 h-12 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center mb-3"><i className="fa-solid fa-school-flag text-lg"></i></div>
+                        <h4 className="font-black text-slate-800 text-sm uppercase">Cadastrar Escola</h4>
+                        <p className="text-[10px] text-slate-400 font-bold max-w-[180px] mt-1 leading-tight">Pré-cadastre uma nova escola para os professores selecionarem ao criar conta.</p>
+                     </div>
+                     <button 
+                        onClick={() => {
+                           setNewSchoolData({ name: '', director: '', pedagogical_coordinator: '', logo_url: '' });
+                           setIsCreateSchoolModalOpen(true);
+                        }} 
+                        className="mt-6 w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-black text-[10px] uppercase transition-colors shadow-sm"
+                     >
+                        Cadastrar Nova Escola
+                     </button>
+                  </div>
+                  {schools.map(s => (
                     <div key={s.id} className="bg-white border p-6 rounded-[2rem] shadow-sm flex flex-col justify-between">
                        <div>
                           <div className="flex items-center gap-3 mb-4"><div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center overflow-hidden">{s.logo_url && <img src={s.logo_url} className="w-full h-full object-contain p-1" />}</div><h4 className="font-black text-slate-900 text-sm">{s.name}</h4></div>
                           <p className="text-[10px] text-slate-400 uppercase font-black">Direção: <span className="text-slate-600">{s.director || 'N/A'}</span></p>
                           <p className="text-[10px] text-slate-400 uppercase font-black">Coordenação: <span className="text-slate-600">{s.pedagogical_coordinator || 'N/A'}</span></p>
                        </div>
-                       <button onClick={() => setEditingSchool(s)} className="mt-6 w-full py-3 bg-slate-50 text-slate-600 rounded-xl font-black text-[10px] uppercase hover:bg-indigo-50 hover:text-indigo-600">Editar Dados</button>
+                       <div className="mt-6 flex gap-2"><button onClick={() => setEditingSchool(s)} className="flex-1 py-3 bg-slate-50 text-slate-600 rounded-xl font-black text-[10px] uppercase hover:bg-indigo-50 hover:text-indigo-600">Editar Dados</button><button onClick={() => handleAdminDeleteSchool(s.id)} className="px-3 bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white rounded-xl transition-all" title="Excluir Escola"><i className="fa-solid fa-trash-can"></i></button></div>
                     </div>
                  ))}
               </div>
@@ -1633,6 +1691,22 @@ ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;`}</pre>
                  <div><label className="text-[10px] font-black uppercase text-slate-400 block mb-1">Permissão</label><select value={editingTeacher.role || 'teacher'} onChange={e => setEditingTeacher({...editingTeacher, role: e.target.value})} className="w-full bg-slate-50 border p-3 rounded-xl text-xs font-bold"><option value="teacher">Professor</option><option value="admin">Administrador (Acesso ao Painel Admin)</option></select></div>
                  <div><label className="text-[10px] font-black uppercase text-slate-400 block mb-1">Disciplinas (Separadas por vírgula)</label><textarea value={editingTeacher.disciplines || ''} onChange={e => setEditingTeacher({...editingTeacher, disciplines: e.target.value})} className="w-full bg-slate-50 border p-3 rounded-xl text-xs font-bold h-24" /></div>
                  <div className="flex gap-3 pt-4"><button type="button" onClick={() => setEditingTeacher(null)} className="flex-1 bg-slate-100 text-slate-600 p-4 rounded-xl font-black text-xs uppercase">Cancelar</button><button type="submit" className="flex-1 bg-indigo-600 text-white p-4 rounded-xl font-black text-xs uppercase">Salvar Alterações</button></div>
+              </form>
+           </div>
+        </div>
+      )}
+
+      {/* MODAL CADASTRAR ESCOLA (ADMIN) */}
+      {isCreateSchoolModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+           <div className="bg-white rounded-[2rem] w-full max-w-md p-8 shadow-2xl animate-in zoom-in-95">
+              <h3 className="text-xl font-black text-slate-900 mb-6 uppercase">Cadastrar Escola</h3>
+              <form onSubmit={handleAdminCreateSchool} className="space-y-4">
+                 <div><label className="text-[10px] font-black uppercase text-slate-400 block mb-1">Nome da Escola</label><input required value={newSchoolData.name} onChange={e => setNewSchoolData({...newSchoolData, name: e.target.value})} className="w-full bg-slate-50 border p-3 rounded-xl text-xs font-bold" placeholder="Ex: Colégio Dom Bosco" /></div>
+                 <div><label className="text-[10px] font-black uppercase text-slate-400 block mb-1">Diretor(a)</label><input value={newSchoolData.director} onChange={e => setNewSchoolData({...newSchoolData, director: e.target.value})} className="w-full bg-slate-50 border p-3 rounded-xl text-xs font-bold" placeholder="Nome do Diretor" /></div>
+                 <div><label className="text-[10px] font-black uppercase text-slate-400 block mb-1">Coordenador(a)</label><input value={newSchoolData.pedagogical_coordinator} onChange={e => setNewSchoolData({...newSchoolData, pedagogical_coordinator: e.target.value})} className="w-full bg-slate-50 border p-3 rounded-xl text-xs font-bold" placeholder="Nome do Coordenador" /></div>
+                 <div><label className="text-[10px] font-black uppercase text-slate-400 block mb-1">URL da Logo (Opcional)</label><input value={newSchoolData.logo_url} onChange={e => setNewSchoolData({...newSchoolData, logo_url: e.target.value})} className="w-full bg-slate-50 border p-3 rounded-xl text-xs font-bold" placeholder="https://exemplo.com/logo.png" /></div>
+                 <div className="flex gap-3 pt-4"><button type="button" onClick={() => setIsCreateSchoolModalOpen(false)} className="flex-1 bg-slate-100 text-slate-600 p-4 rounded-xl font-black text-xs uppercase">Cancelar</button><button type="submit" className="flex-1 bg-indigo-600 text-white p-4 rounded-xl font-black text-xs uppercase">Cadastrar</button></div>
               </form>
            </div>
         </div>
