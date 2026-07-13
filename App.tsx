@@ -252,7 +252,9 @@ ALTER TABLE school_year_settings DISABLE ROW LEVEL SECURITY; -- Apenas o própri
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [showSalesPage, setShowSalesPage] = useState(true);
-  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'success'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'success' | 'forgot-password' | 'reset-password'>('login');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [authLoading, setAuthLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [view, setView] = useState<'lobby' | 'editor' | 'admin'>('lobby');
@@ -260,8 +262,22 @@ const App: React.FC = () => {
   const [userProfile, setUserProfile] = useState<any>(null);
 
   const fetchUserProfile = async (userId: string) => {
-    const { data } = await supabase.from('profiles').select('*').eq('id', userId).single();
-    setUserProfile(data);
+    try {
+      const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single();
+      if (error) {
+        if (error.message && (error.message.toLowerCase().includes("failed to fetch") || error.message.toLowerCase().includes("fetch failed") || error.message.toLowerCase().includes("network error"))) {
+          setIsConnectionError(true);
+        }
+        console.error("Error fetching user profile:", error);
+      } else {
+        setUserProfile(data);
+      }
+    } catch (err: any) {
+      console.error("Catch fetching user profile:", err);
+      if (err.message && (err.message.toLowerCase().includes("failed to fetch") || err.message.toLowerCase().includes("fetch failed") || err.message.toLowerCase().includes("network error"))) {
+        setIsConnectionError(true);
+      }
+    }
   };
   const [adminTab, setAdminTab] = useState<'professores' | 'escolas' | 'planos' | 'estrutura' | 'horarios' | 'ano_letivo' | 'db_setup'>('professores');
   
@@ -272,6 +288,7 @@ const App: React.FC = () => {
   const [yearSettings, setYearSettings] = useState<SchoolYearSettings | null>(null);
   const [plans, setPlans] = useState<PlanDocument[]>([]);
   const [fetchingPlans, setFetchingPlans] = useState(false);
+  const [isConnectionError, setIsConnectionError] = useState(false);
   const [dbClasses, setDbClasses] = useState<string[]>([]); // Turmas vindas do banco
 
   // Estados de Edição Admin
@@ -337,8 +354,16 @@ const App: React.FC = () => {
   });
 
   const showNotify = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
-    setNotification({ isOpen: true, message, type });
-    setTimeout(() => setNotification(null), 5000);
+    let finalMessage = message;
+    if (message && (
+      message.toLowerCase().includes("failed to fetch") || 
+      message.toLowerCase().includes("fetch failed") || 
+      message.toLowerCase().includes("network error")
+    )) {
+      finalMessage = "Erro de conexão (Failed to fetch). Verifique sua conexão de internet, se o seu AdBlocker ou firewall está bloqueando domínios do Supabase, ou se a conta do banco de dados foi pausada por inatividade.";
+    }
+    setNotification({ isOpen: true, message: finalMessage, type });
+    setTimeout(() => setNotification(null), 8000);
   }, []);
 
   const isMaster = user?.email === MASTER_EMAIL || userProfile?.role === 'admin';
@@ -356,7 +381,12 @@ const App: React.FC = () => {
     setSchoolsLoading(true);
     try {
       const { data, error } = await supabase.from('schools').select('*').order('name');
-      if (error) throw error;
+      if (error) {
+        if (error.message && (error.message.toLowerCase().includes("failed to fetch") || error.message.toLowerCase().includes("fetch failed") || error.message.toLowerCase().includes("network error"))) {
+          setIsConnectionError(true);
+        }
+        throw error;
+      }
       const schoolsData = (data || []) as School[];
       setSchools(schoolsData);
       // Seleciona a primeira escola por padrão no admin
@@ -364,7 +394,10 @@ const App: React.FC = () => {
         setAdminSelectedSchoolId(schoolsData[0].id);
       }
     } catch (err: any) {
-      console.error(err.message);
+      console.error(err.message || err);
+      if (err.message && (err.message.toLowerCase().includes("failed to fetch") || err.message.toLowerCase().includes("fetch failed") || err.message.toLowerCase().includes("network error"))) {
+        setIsConnectionError(true);
+      }
     } finally {
       setSchoolsLoading(false);
     }
@@ -380,35 +413,82 @@ const App: React.FC = () => {
         .maybeSingle(); // Not throwing error if it doesn't exist
       
       if (error) {
+        if (error.message && (error.message.toLowerCase().includes("failed to fetch") || error.message.toLowerCase().includes("fetch failed") || error.message.toLowerCase().includes("network error"))) {
+          setIsConnectionError(true);
+        }
         console.error("Erro ao buscar ano letivo do banco:", error.message);
         return;
       }
       setYearSettings(data as SchoolYearSettings | null);
     } catch (err: any) {
       console.error(err);
+      if (err.message && (err.message.toLowerCase().includes("failed to fetch") || err.message.toLowerCase().includes("fetch failed") || err.message.toLowerCase().includes("network error"))) {
+        setIsConnectionError(true);
+      }
     }
   }, [supabase]);
 
   const fetchTeachers = useCallback(async () => {
     if (!isMaster) return;
-    const { data, error } = await supabase.from('profiles').select('*').order('full_name');
-    if (!error) setTeachers(data || []);
+    try {
+      const { data, error } = await supabase.from('profiles').select('*').order('full_name');
+      if (error) {
+        if (error.message && (error.message.toLowerCase().includes("failed to fetch") || error.message.toLowerCase().includes("fetch failed") || error.message.toLowerCase().includes("network error"))) {
+          setIsConnectionError(true);
+        }
+        console.error("Error fetching teachers:", error);
+      } else {
+        setTeachers(data || []);
+      }
+    } catch (err: any) {
+      console.error(err);
+      if (err.message && (err.message.toLowerCase().includes("failed to fetch") || err.message.toLowerCase().includes("fetch failed") || err.message.toLowerCase().includes("network error"))) {
+        setIsConnectionError(true);
+      }
+    }
   }, [isMaster]);
 
   const fetchAllPlans = useCallback(async () => {
     if (!isMaster) return;
-    const { data, error } = await supabase.from('user_plans').select('*').order('updated_at', { ascending: false }).limit(100);
-    if (error) console.error("Error fetching admin plans:", error);
-    if (!error) setAllPlans(data as PlanDocument[] || []);
+    try {
+      const { data, error } = await supabase.from('user_plans').select('id, user_id, settings, updated_at').order('updated_at', { ascending: false }).limit(100);
+      if (error) {
+        if (error.message && (error.message.toLowerCase().includes("failed to fetch") || error.message.toLowerCase().includes("fetch failed") || error.message.toLowerCase().includes("network error"))) {
+          setIsConnectionError(true);
+        }
+        console.error("Error fetching admin plans:", error);
+      } else {
+        setAllPlans(data as PlanDocument[] || []);
+      }
+    } catch (err: any) {
+      console.error("Error fetching admin plans catch:", err);
+      if (err.message && (err.message.toLowerCase().includes("failed to fetch") || err.message.toLowerCase().includes("fetch failed") || err.message.toLowerCase().includes("network error"))) {
+        setIsConnectionError(true);
+      }
+    }
   }, [isMaster]);
 
   const fetchUserPlans = useCallback(async (showLoading = true) => {
     if (!user) return;
     if (showLoading) setFetchingPlans(true);
-    const { data, error } = await supabase.from('user_plans').select('*').eq('user_id', user.id).order('updated_at', { ascending: false });
-    if (error) console.error("Error fetching user plans:", error);
-    if (!error) setPlans(data as PlanDocument[] || []);
-    setFetchingPlans(false);
+    try {
+      const { data, error } = await supabase.from('user_plans').select('*').eq('user_id', user.id).order('updated_at', { ascending: false });
+      if (error) {
+        if (error.message && (error.message.toLowerCase().includes("failed to fetch") || error.message.toLowerCase().includes("fetch failed") || error.message.toLowerCase().includes("network error"))) {
+          setIsConnectionError(true);
+        }
+        console.error("Error fetching user plans:", error);
+      } else {
+        setPlans(data as PlanDocument[] || []);
+      }
+    } catch (err: any) {
+      console.error("Error fetching user plans catch:", err);
+      if (err.message && (err.message.toLowerCase().includes("failed to fetch") || err.message.toLowerCase().includes("fetch failed") || err.message.toLowerCase().includes("network error"))) {
+        setIsConnectionError(true);
+      }
+    } finally {
+      setFetchingPlans(false);
+    }
   }, [user]);
 
   // Busca turmas da escola do usuário logado OU da escola selecionada no modal
@@ -449,14 +529,31 @@ const App: React.FC = () => {
   useEffect(() => {
     fetchSchools();
     supabase.auth.getSession().then(({ data: { session }, error }) => {
-      if (error) { supabase.auth.signOut(); setUser(null); setUserProfile(null); } 
+      if (error) { 
+        if (error.message && (error.message.toLowerCase().includes("failed to fetch") || error.message.toLowerCase().includes("fetch failed") || error.message.toLowerCase().includes("network error"))) {
+          setIsConnectionError(true);
+        }
+        supabase.auth.signOut(); 
+        setUser(null); 
+        setUserProfile(null); 
+      } 
       else { 
         setUser(session?.user ?? null); 
         if (session?.user) fetchUserProfile(session.user.id);
       }
       setAuthLoading(false);
+    }).catch(err => {
+      console.error("Error getting session:", err);
+      if (err.message && (err.message.toLowerCase().includes("failed to fetch") || err.message.toLowerCase().includes("fetch failed") || err.message.toLowerCase().includes("network error"))) {
+        setIsConnectionError(true);
+      }
+      setAuthLoading(false);
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setAuthMode('reset-password');
+        setShowSalesPage(false);
+      }
       setUser(session?.user ?? null);
       if (session?.user) {
         fetchUserProfile(session.user.id);
@@ -466,6 +563,13 @@ const App: React.FC = () => {
     });
     return () => subscription.unsubscribe();
   }, [fetchSchools]);
+
+  useEffect(() => {
+    if (window.location.hash && (window.location.hash.includes('type=recovery') || window.location.hash.includes('recovery_token='))) {
+      setAuthMode('reset-password');
+      setShowSalesPage(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (view === 'lobby' && user) {
@@ -493,6 +597,55 @@ const App: React.FC = () => {
         if (error) throw error;
       }
     } catch (err: any) { showNotify(err.message, "error"); } finally { setIsSubmitting(false); }
+  };
+
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.email) {
+      showNotify("Por favor, digite seu e-mail.", "error");
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(formData.email, {
+        redirectTo: window.location.origin
+      });
+      if (error) throw error;
+      showNotify("E-mail de recuperação enviado! Verifique sua caixa de entrada.", "success");
+      setAuthMode('login');
+    } catch (err: any) {
+      showNotify("Erro ao enviar e-mail de recuperação: " + err.message, "error");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPassword) {
+      showNotify("Digite a nova senha.", "error");
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      showNotify("As senhas não coincidem.", "error");
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) throw error;
+      showNotify("Senha redefinida com sucesso! Por favor, faça login com a nova senha.", "success");
+      await supabase.auth.signOut();
+      setUser(null);
+      setUserProfile(null);
+      setNewPassword('');
+      setConfirmNewPassword('');
+      setAuthMode('login');
+    } catch (err: any) {
+      showNotify("Erro ao redefinir a senha: " + err.message, "error");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleCreateNewPlan = async (e: React.FormEvent) => {
@@ -532,7 +685,21 @@ const App: React.FC = () => {
     } catch (err: any) { showNotify(err.message, "error"); } finally { setSyncing(false); }
   };
 
-  const openEditor = (plan: PlanDocument) => { setActivePlanId(plan.id); setSettings(plan.settings); setCurriculum(plan.curriculum || []); setView('editor'); };
+  const openEditor = async (plan: PlanDocument) => {
+    let finalPlan = plan;
+    if (!plan.curriculum) {
+      setSyncing(true);
+      const { data, error } = await supabase.from('user_plans').select('*').eq('id', plan.id).single();
+      setSyncing(false);
+      if (!error && data) {
+        finalPlan = data as any;
+      }
+    }
+    setActivePlanId(finalPlan.id);
+    setSettings(finalPlan.settings);
+    setCurriculum(finalPlan.curriculum || []);
+    setView('editor');
+  };
 
   const performSave = async () => {
     if (!user || !activePlanId || !settings) return;
@@ -1173,21 +1340,64 @@ const App: React.FC = () => {
     }
   };
 
+  const connectionWarningBanner = isConnectionError && (
+    <div className="fixed bottom-6 left-6 right-6 md:left-auto md:max-w-md z-[50000] animate-in slide-in-from-bottom-5 text-left">
+       <div className="bg-amber-50 border border-amber-200 rounded-[2rem] p-6 shadow-2xl text-amber-900 flex flex-col gap-3">
+          <div className="flex items-center gap-3">
+             <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center text-amber-600 shrink-0">
+                <i className="fa-solid fa-triangle-exclamation text-lg"></i>
+             </div>
+             <div>
+                <h4 className="font-black text-xs uppercase tracking-wider text-amber-800 leading-tight">Erro de Conexão com o Banco</h4>
+                <p className="text-[10px] text-amber-600 font-bold">Inatividade / Failed to fetch</p>
+             </div>
+          </div>
+          <p className="text-[11px] leading-relaxed font-semibold text-amber-700">
+             A conexão com o banco de dados falhou. Isso geralmente ocorre se o banco de dados gratuito do Supabase foi <strong>pausado por inatividade</strong>.
+             Para resolver, acesse o painel do Supabase e ative o projeto novamente, ou desative extensões de bloqueio de anúncios (AdBlock).
+          </p>
+          <div className="flex gap-2">
+             <a 
+                href="https://supabase.com/dashboard" 
+                target="_blank" 
+                rel="noopener noreferrer" 
+                className="flex-1 bg-amber-600 hover:bg-amber-500 text-white py-2.5 rounded-xl text-[9px] font-black uppercase tracking-wider text-center transition-colors"
+             >
+                Ir para o Painel Supabase
+             </a>
+             <button 
+                onClick={() => {
+                   setIsConnectionError(false);
+                   fetchSchools();
+                   if (user) fetchUserPlans();
+                }} 
+                className="px-4 bg-amber-100 hover:bg-amber-200 text-amber-800 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-wider transition-colors"
+             >
+                Tentar Novamente
+             </button>
+          </div>
+       </div>
+    </div>
+  );
+
   if (authLoading) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><i className="fa-solid fa-circle-notch fa-spin text-4xl text-indigo-600"></i></div>;
   
   if (!user) {
     if (showSalesPage) {
       return (
-        <SalesPage 
-          onLoginClick={() => {
-            setAuthMode('login');
-            setShowSalesPage(false);
-          }} 
-          onSignupClick={() => {
-            setAuthMode('signup');
-            setShowSalesPage(false);
-          }} 
-        />
+        <>
+          <SalesPage 
+            onLoginClick={() => {
+              setAuthMode('login');
+              setShowSalesPage(false);
+            }} 
+            onSignupClick={() => {
+              setAuthMode('signup');
+              setShowSalesPage(false);
+            }} 
+          />
+          {connectionWarningBanner}
+        </>
       );
     }
 
@@ -1212,10 +1422,115 @@ const App: React.FC = () => {
               <h2 className="text-xl font-black text-slate-900 uppercase mb-2">Sucesso!</h2>
               <button onClick={() => setAuthMode('login')} className="w-full bg-indigo-600 text-white p-5 rounded-2xl font-black text-xs uppercase shadow-lg">Ir para Login</button>
             </div>
+          ) : authMode === 'forgot-password' ? (
+            <form onSubmit={handleForgotPassword} className="space-y-4">
+              <div className="text-center mb-6">
+                 <div className="w-16 h-16 bg-amber-50 rounded-full flex items-center justify-center text-amber-600 mx-auto mb-4 border border-amber-100">
+                    <i className="fa-solid fa-key-skeleton text-2xl"></i>
+                 </div>
+                 <h2 className="text-sm font-black text-slate-900 uppercase tracking-wider">Recuperar Senha</h2>
+                 <p className="text-[11px] text-slate-500 font-bold mt-2 leading-relaxed">
+                   Insira seu e-mail abaixo para receber um link de redefinição de senha seguro.
+                 </p>
+              </div>
+
+              <input 
+                required 
+                type="email" 
+                placeholder="Seu e-mail profissional" 
+                value={formData.email} 
+                onChange={e => setFormData({...formData, email: e.target.value})} 
+                className="w-full bg-slate-50 border p-4 rounded-2xl text-xs font-bold text-slate-900 outline-none focus:border-indigo-600 transition-colors" 
+              />
+
+              <button 
+                type="submit" 
+                disabled={isSubmitting}
+                className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-400 text-white p-5 rounded-2xl font-black text-xs uppercase shadow-lg transition-colors flex items-center justify-center gap-2"
+              >
+                {isSubmitting ? <i className="fa-solid fa-circle-notch fa-spin"></i> : null}
+                Enviar Link de Recuperação
+              </button>
+
+              <button 
+                type="button" 
+                onClick={() => setAuthMode('login')} 
+                className="w-full text-[10px] font-black text-slate-400 text-center uppercase mt-4 hover:text-slate-600 transition-colors"
+              >
+                Voltar para o Login
+              </button>
+            </form>
+          ) : authMode === 'reset-password' ? (
+            <form onSubmit={handleResetPassword} className="space-y-4">
+              <div className="text-center mb-6">
+                 <div className="w-16 h-16 bg-indigo-50 rounded-full flex items-center justify-center text-indigo-600 mx-auto mb-4 border border-indigo-100">
+                    <i className="fa-solid fa-lock-open text-2xl"></i>
+                 </div>
+                 <h2 className="text-sm font-black text-slate-900 uppercase tracking-wider">Nova Senha</h2>
+                 <p className="text-[11px] text-slate-500 font-bold mt-2 leading-relaxed">
+                   Escolha uma nova senha de acesso segura para a sua conta acadêmica.
+                 </p>
+              </div>
+
+              <input 
+                required 
+                type="password" 
+                placeholder="Nova Senha (mínimo 6 caracteres)" 
+                value={newPassword} 
+                onChange={e => setNewPassword(e.target.value)} 
+                className="w-full bg-slate-50 border p-4 rounded-2xl text-xs font-bold text-slate-900 outline-none focus:border-indigo-600 transition-colors" 
+              />
+
+              <input 
+                required 
+                type="password" 
+                placeholder="Confirme a Nova Senha" 
+                value={confirmNewPassword} 
+                onChange={e => setConfirmNewPassword(e.target.value)} 
+                className="w-full bg-slate-50 border p-4 rounded-2xl text-xs font-bold text-slate-900 outline-none focus:border-indigo-600 transition-colors" 
+              />
+
+              <button 
+                type="submit" 
+                disabled={isSubmitting}
+                className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-400 text-white p-5 rounded-2xl font-black text-xs uppercase shadow-lg transition-colors flex items-center justify-center gap-2"
+              >
+                {isSubmitting ? <i className="fa-solid fa-circle-notch fa-spin"></i> : null}
+                Salvar Nova Senha
+              </button>
+
+              <button 
+                type="button" 
+                onClick={() => {
+                  supabase.auth.signOut();
+                  setUser(null);
+                  setUserProfile(null);
+                  setAuthMode('login');
+                }} 
+                className="w-full text-[10px] font-black text-slate-400 text-center uppercase mt-4 hover:text-slate-600 transition-colors"
+              >
+                Voltar para o Login / Cancelar
+              </button>
+            </form>
           ) : (
             <form onSubmit={handleAuth} className="space-y-4 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
               <input required type="email" placeholder="E-mail profissional" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="w-full bg-slate-50 border p-4 rounded-2xl text-xs font-bold text-slate-900 outline-none" />
-              <input required type="password" placeholder="Senha" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} className="w-full bg-slate-50 border p-4 rounded-2xl text-xs font-bold text-slate-900 outline-none" />
+              
+              <div className="space-y-1">
+                <input required type="password" placeholder="Senha" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} className="w-full bg-slate-50 border p-4 rounded-2xl text-xs font-bold text-slate-900 outline-none" />
+                {authMode === 'login' && (
+                  <div className="text-right px-1">
+                    <button 
+                      type="button" 
+                      onClick={() => setAuthMode('forgot-password')} 
+                      className="text-[10px] font-extrabold text-indigo-600 hover:text-indigo-500 uppercase tracking-widest transition-colors"
+                    >
+                      Esqueceu a senha?
+                    </button>
+                  </div>
+                )}
+              </div>
+
               {authMode === 'signup' && (
                 <>
                   <input required placeholder="Nome Completo" value={formData.fullName} onChange={e => setFormData({...formData, fullName: e.target.value})} className="w-full bg-slate-50 border p-4 rounded-2xl text-xs font-bold text-slate-900 outline-none" />
@@ -1235,6 +1550,7 @@ const App: React.FC = () => {
             </form>
           )}
         </div>
+        {connectionWarningBanner}
       </div>
     );
   }
@@ -1280,7 +1596,32 @@ const App: React.FC = () => {
                                 <td className="p-4 text-[10px] text-slate-500 italic max-w-xs truncate">{t.disciplines || 'N/A'}</td>
                                 <td className="p-4 text-right">
                                    <div className="flex gap-2 justify-end">
-                                      <button onClick={() => setEditingTeacher(t)} className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white flex items-center justify-center"><i className="fa-solid fa-pen"></i></button>
+                                      <button 
+                                          onClick={() => {
+                                             setConfirmDialog({
+                                                isOpen: true,
+                                                title: "Enviar Reset de Senha",
+                                                message: `Deseja enviar um e-mail de redefinição de senha para o professor ${t.full_name} (${t.email})?`,
+                                                onConfirm: async () => {
+                                                   try {
+                                                      const { error } = await supabase.auth.resetPasswordForEmail(t.email, {
+                                                         redirectTo: window.location.origin
+                                                      });
+                                                      if (error) throw error;
+                                                      showNotify(`E-mail de redefinição de senha enviado com sucesso para ${t.email}!`, "success");
+                                                   } catch (err: any) {
+                                                      showNotify(`Erro ao enviar reset: ${err.message}`, "error");
+                                                   }
+                                                   setConfirmDialog(null);
+                                                }
+                                             });
+                                          }} 
+                                          title="Enviar link de reset de senha por e-mail"
+                                          className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 hover:bg-amber-600 hover:text-white flex items-center justify-center shrink-0"
+                                       >
+                                          <i className="fa-solid fa-key text-[10px]"></i>
+                                       </button>
+                                       <button onClick={() => setEditingTeacher(t)} className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white flex items-center justify-center shrink-0"><i className="fa-solid fa-pen text-[10px]"></i></button>
                                       <button onClick={() => handleAdminDeleteTeacher(t.id)} className="w-8 h-8 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white flex items-center justify-center"><i className="fa-solid fa-trash"></i></button>
                                    </div>
                                 </td>
@@ -1929,8 +2270,13 @@ ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;`}</pre>
       )}
 
       {notification && (
-        <div className="fixed top-10 right-10 z-[30000] animate-in slide-in-from-right-4 max-w-[90vw]">
-           <div className={`p-6 rounded-[2rem] shadow-2xl border flex items-center gap-4 ${notification.type === 'success' ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}><span className="text-[10px] font-black uppercase tracking-widest">{notification.message}</span></div>
+        <div className="fixed top-10 right-10 z-[30000] animate-in slide-in-from-right-4 max-w-[400px] w-[90vw]">
+           <div className={`p-6 rounded-[2rem] shadow-2xl border flex items-center gap-4 ${notification.type === 'success' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-rose-50 text-rose-800 border-rose-200'}`}>
+              <div className="flex items-start gap-2">
+                 <i className={`fa-solid ${notification.type === 'success' ? 'fa-circle-check text-emerald-500' : 'fa-circle-exclamation text-rose-500'} mt-0.5 text-base`}></i>
+                 <span className="text-xs font-bold leading-relaxed">{notification.message}</span>
+              </div>
+           </div>
         </div>
       )}
 
@@ -2090,6 +2436,8 @@ ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;`}</pre>
           </div>
         </div>
       )}
+
+      {connectionWarningBanner}
 
       <style>{`.custom-scrollbar::-webkit-scrollbar { width: 4px; } .custom-scrollbar::-webkit-scrollbar-thumb { background: #E2E8F0; border-radius: 10px; }`}</style>
     </div>
