@@ -389,10 +389,6 @@ const App: React.FC = () => {
       }
       const schoolsData = (data || []) as School[];
       setSchools(schoolsData);
-      // Seleciona a primeira escola por padrão no admin
-      if (schoolsData.length > 0 && !adminSelectedSchoolId) {
-        setAdminSelectedSchoolId(schoolsData[0].id);
-      }
     } catch (err: any) {
       console.error(err.message || err);
       if (err.message && (err.message.toLowerCase().includes("failed to fetch") || err.message.toLowerCase().includes("fetch failed") || err.message.toLowerCase().includes("network error"))) {
@@ -401,7 +397,14 @@ const App: React.FC = () => {
     } finally {
       setSchoolsLoading(false);
     }
-  }, [supabase, adminSelectedSchoolId]);
+  }, [supabase]);
+
+  // Seta a primeira escola por padrão no admin de forma estável
+  useEffect(() => {
+    if (schools.length > 0 && !adminSelectedSchoolId) {
+      setAdminSelectedSchoolId(schools[0].id);
+    }
+  }, [schools, adminSelectedSchoolId]);
 
   const fetchYearSettings = useCallback(async (schoolId?: string, year?: number) => {
     if (!schoolId || !year) return;
