@@ -15,6 +15,7 @@ const TeachersManager: React.FC<TeachersManagerProps> = ({ schoolId, supabase, o
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTeacher, setEditingTeacher] = useState<SchoolTeacher | null>(null);
+  const [shifts, setShifts] = useState<any[]>([]);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -28,12 +29,35 @@ const TeachersManager: React.FC<TeachersManagerProps> = ({ schoolId, supabase, o
   // Estrutura: { "1": [true, true...], "2": ... } onde 1=Segunda
   const [tempAvailability, setTempAvailability] = useState<Record<string, boolean[]>>({});
 
+  const getLessonTimeLabel = (shift: any, lessonIndex: number) => {
+    if (!shift.start_time) return '';
+    const [startH, startM] = shift.start_time.split(':').map(Number);
+    let totalMinutes = startH * 60 + startM;
+
+    // Adiciona tempo das aulas anteriores
+    totalMinutes += lessonIndex * shift.lesson_duration_min;
+
+    // Adiciona intervalo se já passou da aula de quebra
+    if (shift.break_after_lesson && lessonIndex >= shift.break_after_lesson) {
+      totalMinutes += (shift.break_duration_min || 0);
+    }
+
+    const h = Math.floor(totalMinutes / 60);
+    const m = totalMinutes % 60;
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+  };
+
   const fetchTeachers = useCallback(async () => {
     setLoading(true);
     try {
       const { data, error } = await supabase.from('school_teachers').select('*').eq('school_id', schoolId).order('name');
       if (error) throw error;
       setTeachers(data || []);
+
+      // Buscar turnos da escola
+      const { data: shiftData, error: shiftError } = await supabase.from('school_shifts').select('*').eq('school_id', schoolId).order('name');
+      if (shiftError) throw shiftError;
+      setShifts(shiftData || []);
     } catch (error: any) {
       onShowNotify(error.message, 'error');
     } finally {
@@ -46,6 +70,10 @@ const TeachersManager: React.FC<TeachersManagerProps> = ({ schoolId, supabase, o
   }, [fetchTeachers, schoolId]);
 
   const handleOpenModal = (teacher?: SchoolTeacher) => {
+    const totalSlots = shifts.length > 0 
+      ? shifts.reduce((acc, curr) => acc + curr.lessons_per_day, 0)
+      : 10;
+
     if (teacher) {
       setEditingTeacher(teacher);
       setFormData({
@@ -54,7 +82,21 @@ const TeachersManager: React.FC<TeachersManagerProps> = ({ schoolId, supabase, o
         disciplines: teacher.disciplines,
         availability: teacher.availability
       });
-      setTempAvailability(teacher.availability || {});
+
+      const avail = teacher.availability || {};
+      const normalizedAvail: Record<string, boolean[]> = {};
+      for (let i = 1; i <= 5; i++) {
+        const dayKey = i.toString();
+        const existingArray = avail[dayKey] || [];
+        const newArray = Array(totalSlots).fill(true);
+        for (let j = 0; j < totalSlots; j++) {
+          if (j < existingArray.length) {
+            newArray[j] = existingArray[j];
+          }
+        }
+        normalizedAvail[dayKey] = newArray;
+      }
+      setTempAvailability(normalizedAvail);
     } else {
       setEditingTeacher(null);
       setFormData({
@@ -63,9 +105,10 @@ const TeachersManager: React.FC<TeachersManagerProps> = ({ schoolId, supabase, o
         disciplines: [],
         availability: {}
       });
-      // Default availability: All true (5 days, 5 periods default - will adjust dynamically)
       const defaultAvail: Record<string, boolean[]> = {};
-      for (let i = 1; i <= 5; i++) defaultAvail[i.toString()] = Array(10).fill(true); // 10 slots safe margin
+      for (let i = 1; i <= 5; i++) {
+        defaultAvail[i.toString()] = Array(totalSlots).fill(true);
+      }
       setTempAvailability(defaultAvail);
     }
     setIsModalOpen(true);
@@ -126,7 +169,10 @@ const TeachersManager: React.FC<TeachersManagerProps> = ({ schoolId, supabase, o
   const toggleAvailability = (day: number, period: number) => {
     setTempAvailability(prev => {
       const dayKey = day.toString();
-      const currentDay = prev[dayKey] ? [...prev[dayKey]] : Array(10).fill(true);
+      const totalSlots = shifts.length > 0 
+        ? shifts.reduce((acc, curr) => acc + curr.lessons_per_day, 0)
+        : 10;
+      const currentDay = prev[dayKey] ? [...prev[dayKey]] : Array(totalSlots).fill(true);
       currentDay[period] = !currentDay[period];
       return { ...prev, [dayKey]: currentDay };
     });
@@ -438,35 +484,107 @@ const TeachersManager: React.FC<TeachersManagerProps> = ({ schoolId, supabase, o
                 <label className="text-[10px] font-black uppercase text-slate-400 block mb-2">Disponibilidade de Horário</label>
                 <p className="text-[10px] text-slate-500 mb-4">Clique nos blocos para marcar como <span className="text-rose-500 font-bold">Indisponível</span> (Vermelho).</p>
                 
-                <div className="overflow-x-auto">
-                  <div className="min-w-[600px]">
-                    <div className="grid grid-cols-6 gap-2 mb-2">
-                      <div className="text-center text-[10px] font-black uppercase text-slate-400">Aula</div>
-                      {WEEKDAYS.slice(1, 6).map(day => <div key={day} className="text-center text-[10px] font-black uppercase text-slate-600">{day}</div>)}
-                    </div>
-                    
-                    {Array.from({length: 5}).map((_, periodIndex) => (
-                      <div key={periodIndex} className="grid grid-cols-6 gap-2 mb-2">
-                        <div className="flex items-center justify-center text-[10px] font-black text-slate-400 bg-slate-100 rounded-lg">
-                          {periodIndex + 1}ª Aula
+                {shifts.length > 0 ? (
+                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                    {/* Header: Turnos e Aulas */}
+                    <div className="flex sticky top-0 bg-white z-10 shadow-sm overflow-x-auto">
+                      <div className="w-24 shrink-0 bg-slate-50 border-b border-r border-slate-200 flex items-center justify-center p-2">
+                        <span className="text-[9px] font-black uppercase text-slate-400">Dia</span>
+                      </div> 
+                      {shifts.map(shift => (
+                        <div key={shift.id} className="flex-1 border-l border-indigo-100 min-w-[120px]">
+                          <div className="text-center bg-indigo-50 text-[10px] font-black text-indigo-800 uppercase py-2 border-b border-indigo-100 flex flex-col justify-center h-10 truncate">
+                            <span>{shift.name}</span>
+                          </div>
+                          <div className="flex">
+                            {Array.from({ length: shift.lessons_per_day }).map((_, i) => (
+                              <div key={i} className="flex-1 text-center bg-white border-r border-slate-100 last:border-r-0 py-2">
+                                <div className="text-[10px] font-black text-slate-700">{i + 1}ª</div>
+                                {shift.start_time && (
+                                  <div className="text-[8px] font-bold text-slate-400 mt-0.5">
+                                    {getLessonTimeLabel(shift, i)}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                        {[1, 2, 3, 4, 5].map(dayIndex => {
-                          const isAvailable = tempAvailability[dayIndex.toString()]?.[periodIndex] !== false; // Default true
-                          return (
-                            <button
-                              key={`${dayIndex}-${periodIndex}`}
-                              type="button"
-                              onClick={() => toggleAvailability(dayIndex, periodIndex)}
-                              className={`h-10 rounded-lg border transition-all flex items-center justify-center ${isAvailable ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-rose-50 border-rose-200 text-rose-600'}`}
-                            >
-                              {isAvailable ? <i className="fa-solid fa-check"></i> : <i className="fa-solid fa-ban"></i>}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ))}
+                      ))}
+                    </div>
+
+                    {/* Linhas (Dias da Semana) */}
+                    {[1, 2, 3, 4, 5].map(day => {
+                      const dayKey = day.toString();
+                      let globalSlotIndex = 0;
+
+                      return (
+                        <div key={day} className="flex border-t border-slate-100 hover:bg-slate-50 transition-colors">
+                          <div className="w-24 shrink-0 flex items-center justify-center bg-slate-50 border-r border-slate-200">
+                            <span className="text-[10px] font-black text-slate-600 uppercase">{WEEKDAYS[day]}</span>
+                          </div>
+                          
+                          {shifts.map(shift => (
+                            <div key={shift.id} className="flex-1 flex border-l border-slate-100 min-w-[120px]">
+                              {Array.from({ length: shift.lessons_per_day }).map((_, i) => {
+                                const currentIndex = globalSlotIndex;
+                                const isAvailable = tempAvailability[dayKey]?.[currentIndex] !== false;
+                                globalSlotIndex++;
+                                
+                                return (
+                                  <div key={i} className="flex-1 p-1 border-r border-slate-50 last:border-r-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleAvailability(day, currentIndex)}
+                                      className={`w-full h-12 rounded-lg transition-all flex flex-col items-center justify-center gap-1 border ${
+                                        isAvailable 
+                                          ? 'bg-emerald-50 text-emerald-600 border-emerald-100 hover:bg-emerald-100' 
+                                          : 'bg-rose-50 text-rose-500 border-rose-100 hover:bg-rose-100'
+                                      }`}
+                                    >
+                                      <i className={`fa-solid ${isAvailable ? 'fa-check text-[10px]' : 'fa-ban text-[10px]'}`}></i>
+                                      <span className="text-[8px] font-black uppercase opacity-75">{isAvailable ? 'Livre' : 'Ocupado'}</span>
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
                   </div>
-                </div>
+                ) : (
+                  /* Fallback se não houver turnos */
+                  <div className="overflow-x-auto">
+                    <div className="min-w-[600px]">
+                      <div className="grid grid-cols-6 gap-2 mb-2">
+                        <div className="text-center text-[10px] font-black uppercase text-slate-400">Aula</div>
+                        {WEEKDAYS.slice(1, 6).map(day => <div key={day} className="text-center text-[10px] font-black uppercase text-slate-600">{day}</div>)}
+                      </div>
+                      
+                      {Array.from({length: 7}).map((_, periodIndex) => (
+                        <div key={periodIndex} className="grid grid-cols-6 gap-2 mb-2">
+                          <div className="flex items-center justify-center text-[10px] font-black text-slate-400 bg-slate-100 rounded-lg">
+                            {periodIndex + 1}ª Aula
+                          </div>
+                          {[1, 2, 3, 4, 5].map(dayIndex => {
+                            const isAvailable = tempAvailability[dayIndex.toString()]?.[periodIndex] !== false;
+                            return (
+                              <button
+                                key={`${dayIndex}-${periodIndex}`}
+                                type="button"
+                                onClick={() => toggleAvailability(dayIndex, periodIndex)}
+                                className={`h-10 rounded-lg border transition-all flex items-center justify-center ${isAvailable ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-rose-50 border-rose-200 text-rose-600'}`}
+                              >
+                                {isAvailable ? <i className="fa-solid fa-check"></i> : <i className="fa-solid fa-ban"></i>}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-3 pt-4 border-t">

@@ -464,7 +464,8 @@ const App: React.FC = () => {
   const fetchAllPlans = useCallback(async () => {
     if (!isMaster) return;
     try {
-      const { data, error } = await supabase.from('user_plans').select('id, user_id, settings, updated_at').order('updated_at', { ascending: false }).limit(100);
+      // Otimização extrema para evitar statement timeout: removemos o .order() do banco e fazemos ordenação local no cliente
+      const { data, error } = await supabase.from('user_plans').select('id, user_id, settings, updated_at, created_at').limit(100);
       if (error) {
         if (error.message && (error.message.toLowerCase().includes("failed to fetch") || error.message.toLowerCase().includes("fetch failed") || error.message.toLowerCase().includes("network error"))) {
           setIsConnectionError(true);
@@ -472,14 +473,19 @@ const App: React.FC = () => {
         console.error("Error fetching admin plans:", error.message, error.details, error.hint, error.code);
         
         // Retentativa sem a coluna updated_at caso ela não exista no banco antigo
-        const { data: fallbackData, error: fallbackError } = await supabase.from('user_plans').select('id, user_id, settings').limit(100);
+        const { data: fallbackData, error: fallbackError } = await supabase.from('user_plans').select('id, user_id, settings').limit(50);
         if (fallbackError) {
           console.error("Error fetching admin plans fallback:", fallbackError.message, fallbackError.details);
         } else {
           setAllPlans((fallbackData || []) as PlanDocument[]);
         }
       } else {
-        setAllPlans(data as PlanDocument[] || []);
+        const sorted = (data || []).sort((a: any, b: any) => {
+          const dateA = new Date(a.updated_at || a.created_at || 0).getTime();
+          const dateB = new Date(b.updated_at || b.created_at || 0).getTime();
+          return dateB - dateA;
+        });
+        setAllPlans(sorted as PlanDocument[]);
       }
     } catch (err: any) {
       console.error("Error fetching admin plans catch:", err);
@@ -493,8 +499,8 @@ const App: React.FC = () => {
     if (!user) return;
     if (showLoading) setFetchingPlans(true);
     try {
-      // Otimização crucial: Busca apenas os metadados necessários para renderizar a lista, excluindo a coluna massiva 'curriculum'
-      const { data, error } = await supabase.from('user_plans').select('id, user_id, settings, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false });
+      // Otimização extrema: removemos o .order() do banco para evitar filesort lento sem índice, ordenando na memória do cliente
+      const { data, error } = await supabase.from('user_plans').select('id, user_id, settings, updated_at, created_at').eq('user_id', user.id);
       if (error) {
         if (error.message && (error.message.toLowerCase().includes("failed to fetch") || error.message.toLowerCase().includes("fetch failed") || error.message.toLowerCase().includes("network error"))) {
           setIsConnectionError(true);
@@ -509,7 +515,12 @@ const App: React.FC = () => {
           setPlans(fallbackData as PlanDocument[] || []);
         }
       } else {
-        setPlans(data as PlanDocument[] || []);
+        const sorted = (data || []).sort((a: any, b: any) => {
+          const dateA = new Date(a.updated_at || a.created_at || 0).getTime();
+          const dateB = new Date(b.updated_at || b.created_at || 0).getTime();
+          return dateB - dateA;
+        });
+        setPlans(sorted as PlanDocument[] || []);
       }
     } catch (err: any) {
       console.error("Error fetching user plans catch:", err);

@@ -131,9 +131,10 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
 
             // Verifica professor
             if (lesson.teacher_id) {
-              const teacherKey = `${lesson.teacher_id}_${d}_${p}`;
+              const globalP = getGlobalPeriodIndex(lesson.class_name, p);
+              const teacherKey = `${lesson.teacher_id}_${d}_${globalP}`;
               if (currentTeacherSlots.has(teacherKey)) continue; // Double booking
-              if (!isTeacherAvailable(lesson.teacher_id, d, p)) continue; // Indisponível
+              if (!isTeacherAvailable(lesson.teacher_id, d, p, lesson.class_name)) continue; // Indisponível
             }
 
             // O slot é válido!
@@ -147,7 +148,8 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
             });
 
             if (lesson.teacher_id) {
-              currentTeacherSlots.add(`${lesson.teacher_id}_${d}_${p}`);
+              const globalP = getGlobalPeriodIndex(lesson.class_name, p);
+              currentTeacherSlots.add(`${lesson.teacher_id}_${d}_${globalP}`);
             }
 
             placedCount++;
@@ -312,19 +314,45 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
     }
   };
 
-  const isTeacherAvailable = (teacherId: string, day: number, period: number) => {
+  const getGlobalPeriodIndex = useCallback((className: string, periodIndex: number) => {
+    const cls = classes.find(c => c.name === className);
+    if (!cls || !cls.shift_id || shifts.length === 0) return periodIndex;
+    
+    const sortedShifts = [...shifts].sort((a, b) => a.name.localeCompare(b.name));
+    const shiftIdx = sortedShifts.findIndex(s => s.id === cls.shift_id);
+    if (shiftIdx <= 0) return periodIndex;
+    
+    let offset = 0;
+    for (let i = 0; i < shiftIdx; i++) {
+      offset += sortedShifts[i].lessons_per_day;
+    }
+    return offset + periodIndex;
+  }, [classes, shifts]);
+
+  const isTeacherAvailable = (teacherId: string, day: number, period: number, className?: string) => {
     const teacher = teachers.find(t => t.id === teacherId);
     if (!teacher) return true;
 
-    // Buscar disponibilidade na tabela correta (teacher_availability) via availabilities state
+    const globalPeriod = className ? getGlobalPeriodIndex(className, period) : period;
+
+    // 1. Buscar na tabela 'teacher_availability'
     const avail = availabilities.find(
       a => a.user_id === teacher.auth_id
     );
 
-    if (!avail?.availability_data) return true; // Se não tiver config, assume livre
+    if (avail?.availability_data) {
+      const dayAvail = avail.availability_data[day.toString()];
+      if (dayAvail && dayAvail[globalPeriod] === false) return false;
+      return true;
+    }
 
-    const dayAvail = avail.availability_data[day.toString()];
-    if (dayAvail && dayAvail[period] === false) return false;
+    // 2. FALLBACK: se o professor não se logou e não tem registro em 'teacher_availability', 
+    // usamos o campo 'availability' do próprio 'school_teachers' cadastrado pelo admin
+    if (teacher.availability) {
+      const dayAvail = teacher.availability[day.toString()];
+      if (dayAvail && dayAvail[globalPeriod] === false) return false;
+    }
+
     return true;
   };
 
@@ -342,15 +370,16 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
     if (!teacherId) return null;
 
     // 1. Check Teacher Availability
-    if (!isTeacherAvailable(teacherId, day, period)) {
+    if (!isTeacherAvailable(teacherId, day, period, selectedClass)) {
       return "Professor indisponível neste horário.";
     }
 
     // 2. Check Teacher Double Booking (in other classes)
+    const globalP = getGlobalPeriodIndex(selectedClass, period);
     const otherClassSched = schedules.find(s => 
       s.teacher_id === teacherId && 
       s.day_of_week === day && 
-      s.period_index === period && 
+      getGlobalPeriodIndex(s.class_name, s.period_index) === globalP && 
       s.class_name !== selectedClass
     );
     if (otherClassSched) {
