@@ -194,6 +194,16 @@ create table if not exists teacher_assignments (
   created_at timestamptz default now(),
   unique(school_id, class_name, subject)
 );
+
+-- 10. Índices para Otimização de Performance
+create index if not exists idx_user_plans_user_id on user_plans(user_id);
+create index if not exists idx_user_plans_updated_at on user_plans(updated_at desc);
+create index if not exists idx_profiles_school_id on profiles(school_id);
+create index if not exists idx_school_classes_school_id on school_classes(school_id);
+create index if not exists idx_class_schedules_school_id on class_schedules(school_id);
+create index if not exists idx_school_teachers_school_id on school_teachers(school_id);
+create index if not exists idx_teacher_assignments_school_id on teacher_assignments(school_id);
+create index if not exists idx_school_shifts_school_id on school_shifts(school_id);
 `;
 
 const RLS_POLICY_SCRIPT = `-- Correção de Visibilidade e Recursão nas Políticas RLS
@@ -459,7 +469,15 @@ const App: React.FC = () => {
         if (error.message && (error.message.toLowerCase().includes("failed to fetch") || error.message.toLowerCase().includes("fetch failed") || error.message.toLowerCase().includes("network error"))) {
           setIsConnectionError(true);
         }
-        console.error("Error fetching admin plans:", error);
+        console.error("Error fetching admin plans:", error.message, error.details, error.hint, error.code);
+        
+        // Retentativa sem a coluna updated_at caso ela não exista no banco antigo
+        const { data: fallbackData, error: fallbackError } = await supabase.from('user_plans').select('id, user_id, settings').limit(100);
+        if (fallbackError) {
+          console.error("Error fetching admin plans fallback:", fallbackError.message, fallbackError.details);
+        } else {
+          setAllPlans((fallbackData || []) as PlanDocument[]);
+        }
       } else {
         setAllPlans(data as PlanDocument[] || []);
       }
@@ -475,12 +493,21 @@ const App: React.FC = () => {
     if (!user) return;
     if (showLoading) setFetchingPlans(true);
     try {
-      const { data, error } = await supabase.from('user_plans').select('*').eq('user_id', user.id).order('updated_at', { ascending: false });
+      // Otimização crucial: Busca apenas os metadados necessários para renderizar a lista, excluindo a coluna massiva 'curriculum'
+      const { data, error } = await supabase.from('user_plans').select('id, user_id, settings, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false });
       if (error) {
         if (error.message && (error.message.toLowerCase().includes("failed to fetch") || error.message.toLowerCase().includes("fetch failed") || error.message.toLowerCase().includes("network error"))) {
           setIsConnectionError(true);
         }
-        console.error("Error fetching user plans:", error);
+        console.error("Error fetching user plans:", error.message, error.details, error.hint, error.code);
+        
+        // Retentativa sem a ordenação de updated_at
+        const { data: fallbackData, error: fallbackError } = await supabase.from('user_plans').select('id, user_id, settings, updated_at').eq('user_id', user.id);
+        if (fallbackError) {
+          console.error("Error fetching user plans fallback:", fallbackError.message, fallbackError.details);
+        } else {
+          setPlans(fallbackData as PlanDocument[] || []);
+        }
       } else {
         setPlans(data as PlanDocument[] || []);
       }
@@ -1209,6 +1236,15 @@ const App: React.FC = () => {
     
     setSyncing(true);
     try {
+        let curriculumToUse = planToDuplicate.curriculum;
+        if (!curriculumToUse) {
+            // Otimização crucial: Como otimizamos a busca de listas para excluir o curriculum pesado,
+            // buscamos ele sob demanda agora antes de duplicar.
+            const { data: fullPlan, error: fetchErr } = await supabase.from('user_plans').select('curriculum').eq('id', planToDuplicate.id).single();
+            if (fetchErr) throw fetchErr;
+            curriculumToUse = (fullPlan as any)?.curriculum || [];
+        }
+
         const newSettings = {
             ...planToDuplicate.settings,
             organization: duplicateData.organization,
@@ -1219,7 +1255,7 @@ const App: React.FC = () => {
         const { data, error } = await (supabase.from('user_plans') as any).insert({
             user_id: user.id,
             settings: newSettings,
-            curriculum: planToDuplicate.curriculum
+            curriculum: curriculumToUse
         }).select().single();
 
         if (error) throw error;
