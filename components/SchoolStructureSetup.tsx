@@ -57,12 +57,12 @@ const CUSTOM_MATRIX_CONFIG: Record<string, { subject: string, lessons: number }[
   "1ª": [
     { subject: "Matemática", lessons: 5 }, { subject: "Biologia", lessons: 4 }, { subject: "Química", lessons: 4 }, { subject: "Física", lessons: 3 }, { subject: "História", lessons: 3 }, { subject: "Língua Portuguesa", lessons: 3 },
     { subject: "Geografia", lessons: 2 }, { subject: "Literatura", lessons: 2 }, { subject: "Redação e Leitura", lessons: 2 },
-    { subject: "Arte", lessons: 1 }, { subject: "Atualidades", lessons: 1 }, { subject: "Educação Física", lessons: 1 }, { subject: "Ensino Religioso", lessons: 1 }, { subject: "Língua Espanhola", lessons: 1 }, { subject: "Língua Inglesa", lessons: 1 }, { subject: "Filosofia", lessons: 1 }, { subject: "Sociologia", lessons: 1 }
+    { subject: "Arte", lessons: 1 }, { subject: "Educação Física", lessons: 1 }, { subject: "Ensino Religioso", lessons: 1 }, { subject: "Língua Espanhola", lessons: 1 }, { subject: "Língua Inglesa", lessons: 1 }, { subject: "Filosofia", lessons: 1 }, { subject: "Sociologia", lessons: 1 }
   ],
   "2ª": [
     { subject: "Matemática", lessons: 7 }, { subject: "Biologia", lessons: 4 }, { subject: "Física", lessons: 3 }, { subject: "Língua Portuguesa", lessons: 3 }, { subject: "Química", lessons: 3 },
     { subject: "Geografia", lessons: 2 }, { subject: "História", lessons: 2 }, { subject: "Literatura", lessons: 2 }, { subject: "Redação e Leitura", lessons: 2 },
-    { subject: "Arte", lessons: 1 }, { subject: "Atualidades", lessons: 1 }, { subject: "Educação Física", lessons: 1 }, { subject: "Ensino Religioso", lessons: 1 }, { subject: "Língua Espanhola", lessons: 1 }, { subject: "Língua Inglesa", lessons: 1 }, { subject: "Filosofia", lessons: 1 }, { subject: "Sociologia", lessons: 1 }
+    { subject: "Arte", lessons: 1 }, { subject: "Educação Física", lessons: 1 }, { subject: "Ensino Religioso", lessons: 1 }, { subject: "Língua Espanhola", lessons: 1 }, { subject: "Língua Inglesa", lessons: 1 }, { subject: "Filosofia", lessons: 1 }, { subject: "Sociologia", lessons: 1 }
   ],
   "3ª": [
     { subject: "Matemática", lessons: 5 }, { subject: "Biologia", lessons: 4 }, { subject: "Física", lessons: 4 }, { subject: "Geografia", lessons: 3 }, { subject: "Língua Portuguesa", lessons: 3 }, { subject: "Química", lessons: 3 },
@@ -112,6 +112,13 @@ const SchoolStructureSetup: React.FC<SchoolStructureSetupProps> = ({ schoolId, s
   
   // Matrix Filter State
   const [selectedClass, setSelectedClass] = useState('');
+
+  const allSubjects = useMemo(() => {
+    const customSubjects = matrix
+      .filter(m => m.class_name === selectedClass)
+      .map(m => m.subject);
+    return Array.from(new Set([...DISCIPLINES, ...customSubjects])).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [matrix, selectedClass]);
 
   // Data Fetching
   const fetchData = useCallback(async () => {
@@ -401,9 +408,13 @@ const SchoolStructureSetup: React.FC<SchoolStructureSetupProps> = ({ schoolId, s
       const existing = matrix.find(m => m.class_name === selectedClass && m.subject === subject);
 
       if (amount <= 0 && existing) {
-        // Remove if 0
+        // Remove if 0 from class_matrix, teacher_assignments and class_schedules
         await supabase.from('class_matrix').delete().eq('id', existing.id);
+        await supabase.from('teacher_assignments').delete().eq('school_id', schoolId).eq('class_name', selectedClass).eq('subject', subject);
+        await supabase.from('class_schedules').delete().eq('school_id', schoolId).eq('class_name', selectedClass).eq('subject', subject);
+
         setMatrix(matrix.filter(m => m.id !== existing.id));
+        onShowNotify(`Disciplina "${subject}" removida da turma ${selectedClass}.`, "info");
       } else if (existing) {
         // Update
         const { error } = await supabase.from('class_matrix').update({ lessons_per_week: amount }).eq('id', existing.id);
@@ -502,11 +513,11 @@ const SchoolStructureSetup: React.FC<SchoolStructureSetupProps> = ({ schoolId, s
 
               <div className="bg-slate-50 rounded-2xl p-6 border">
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-4">
-                      {DISCIPLINES.map(subject => {
+                      {allSubjects.map(subject => {
                           const count = matrix.find(m => m.class_name === selectedClass && m.subject === subject)?.lessons_per_week || 0;
                           return (
                               <div key={subject} className="flex justify-between items-center border-b border-slate-200 pb-2 last:border-0">
-                                  <span className="text-[10px] font-bold text-slate-600 uppercase truncate pr-2" title={subject}>{subject}</span>
+                                  <span className={`text-[10px] font-bold uppercase truncate pr-2 ${count > 0 ? 'text-indigo-950 font-black' : 'text-slate-500'}`} title={subject}>{subject}</span>
                                   <div className="flex items-center gap-2 bg-white rounded-lg border p-1">
                                       <button onClick={() => handleUpdateMatrix(subject, Math.max(0, count - 1))} className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600"><i className="fa-solid fa-minus text-[10px]"></i></button>
                                       <span className="w-4 text-center text-xs font-black text-indigo-900">{count}</span>

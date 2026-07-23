@@ -62,7 +62,7 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
       }
 
       const lessonsToPlace: LessonToPlace[] = [];
-      matrix.forEach(m => {
+      matrix.filter(m => m.lessons_per_week > 0).forEach(m => {
         const assign = assignments.find(a => a.class_name === m.class_name && a.subject === m.subject);
         for (let i = 0; i < m.lessons_per_week; i++) {
           lessonsToPlace.push({
@@ -389,8 +389,27 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
     return null;
   };
 
+  const handleRemoveSubjectFromMatrix = async (subject: string) => {
+    if (!window.confirm(`Deseja remover a disciplina "${subject}" da matriz da turma ${selectedClass}?`)) {
+      return;
+    }
+    try {
+      await supabase.from('class_matrix').delete().eq('school_id', schoolId).eq('class_name', selectedClass).eq('subject', subject);
+      await supabase.from('teacher_assignments').delete().eq('school_id', schoolId).eq('class_name', selectedClass).eq('subject', subject);
+      await supabase.from('class_schedules').delete().eq('school_id', schoolId).eq('class_name', selectedClass).eq('subject', subject);
+
+      setMatrix(prev => prev.filter(m => !(m.class_name === selectedClass && m.subject === subject)));
+      setAssignments(prev => prev.filter(a => !(a.class_name === selectedClass && a.subject === subject)));
+      setSchedules(prev => prev.filter(s => !(s.class_name === selectedClass && s.subject === subject)));
+
+      onShowNotify(`Disciplina "${subject}" removida com sucesso da turma ${selectedClass}.`, "success");
+    } catch (error: any) {
+      onShowNotify(error.message, "error");
+    }
+  };
+
   const classMatrix = useMemo(() => {
-    return matrix.filter(m => m.class_name === selectedClass);
+    return matrix.filter(m => m.class_name === selectedClass && m.lessons_per_week > 0);
   }, [matrix, selectedClass]);
 
   const usedLessonsCount = useMemo(() => {
@@ -445,14 +464,24 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
                     <p className="text-xs font-black text-slate-800 uppercase">{m.subject}</p>
                     <p className="text-[10px] text-slate-400 font-bold">{m.lessons_per_week} aulas semanais</p>
                   </div>
-                  <select 
-                    value={assignedTeacher?.id || ''} 
-                    onChange={e => handleAssignTeacher(m.subject, e.target.value)}
-                    className="bg-white border p-2 rounded-lg text-[10px] font-bold text-slate-700 outline-none w-48"
-                  >
-                    <option value="">Selecionar Professor...</option>
-                    {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </select>
+                  <div className="flex items-center gap-2">
+                    <select 
+                      value={assignedTeacher?.id || ''} 
+                      onChange={e => handleAssignTeacher(m.subject, e.target.value)}
+                      className="bg-white border p-2 rounded-lg text-[10px] font-bold text-slate-700 outline-none w-48"
+                    >
+                      <option value="">Selecionar Professor...</option>
+                      {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    </select>
+                    <button 
+                      type="button"
+                      onClick={() => handleRemoveSubjectFromMatrix(m.subject)}
+                      title={`Eliminar ${m.subject} da turma ${selectedClass}`}
+                      className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                    >
+                      <i className="fa-solid fa-trash-can text-xs"></i>
+                    </button>
+                  </div>
                 </div>
               );
             })}
