@@ -574,6 +574,44 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
         </div>
       </div>
 
+      {activeTab === 'assignments' && (
+        <div className="bg-white rounded-[2rem] border p-8 shadow-sm">
+          <h4 className="text-sm font-black text-slate-900 uppercase mb-6">Atribuição de Professores - {selectedClass}</h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {classMatrix.map(m => {
+              const assignedTeacher = getTeacherForSubject(m.subject);
+              return (
+                <div key={m.id} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                  <div className="flex-1">
+                    <p className="text-xs font-black text-slate-800 uppercase">{m.subject}</p>
+                    <p className="text-[10px] text-slate-400 font-bold">{m.lessons_per_week} aulas semanais</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select 
+                      value={assignedTeacher?.id || ''} 
+                      onChange={e => handleAssignTeacher(m.subject, e.target.value)}
+                      className="bg-white border p-2 rounded-lg text-[10px] font-bold text-slate-700 outline-none w-48"
+                    >
+                      <option value="">Selecionar Professor...</option>
+                      {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    </select>
+                    <button 
+                      type="button"
+                      onClick={() => handleRemoveSubjectFromMatrix(m.subject)}
+                      title={`Eliminar ${m.subject} da turma ${selectedClass}`}
+                      className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                    >
+                      <i className="fa-solid fa-trash-can text-xs"></i>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {classMatrix.length === 0 && <p className="text-center text-xs text-slate-400 py-10 font-bold">Nenhuma disciplina na matriz desta turma.</p>}
+        </div>
+      )}
+
       {activeTab === 'grid' && selectedShift && (
         <div className="bg-white rounded-[2rem] border shadow-sm overflow-hidden">
           <div className="p-4 bg-slate-50 border-b flex justify-between items-center">
