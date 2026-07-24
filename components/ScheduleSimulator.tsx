@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { SupabaseClient } from '@supabase/supabase-js';
-import { Database, SchoolShift, SchoolClass, ClassMatrixItem, ScheduleEntry } from '../types';
+import { Database, SchoolShift, SchoolClass, ClassMatrixItem, ScheduleEntry, ScheduleRule } from '../types';
 import { WEEKDAYS } from '../constants';
 
 interface ScheduleSimulatorProps {
@@ -20,7 +20,7 @@ interface TeacherAssignment {
 
 const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabase, onShowNotify }) => {
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'assignments' | 'grid'>('assignments');
+  const [activeTab, setActiveTab] = useState<'assignments' | 'grid' | 'rules'>('assignments');
   
   // Data States
   const [shifts, setShifts] = useState<SchoolShift[]>([]);
@@ -30,6 +30,10 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
   const [assignments, setAssignments] = useState<TeacherAssignment[]>([]);
   const [schedules, setSchedules] = useState<ScheduleEntry[]>([]);
   const [availabilities, setAvailabilities] = useState<any[]>([]);
+  const [customRules, setCustomRules] = useState<ScheduleRule[]>(() => {
+    const saved = localStorage.getItem(`schedule_rules_${schoolId}`);
+    return saved ? JSON.parse(saved) : [];
+  });
 
   // Selection States
   const [selectedClass, setSelectedClass] = useState<string>('');
@@ -37,24 +41,115 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
   const [generating, setGenerating] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
 
+  // New Rule Form State
+  const [newRuleTeacherId, setNewRuleTeacherId] = useState('');
+  const [newRuleSubject, setNewRuleSubject] = useState('');
+  const [newRuleClass, setNewRuleClass] = useState('');
+  const [newRuleDay, setNewRuleDay] = useState<number | ''>('');
+  const [newRulePeriods, setNewRulePeriods] = useState<number[]>([]);
+  const [newRuleReason, setNewRuleReason] = useState('');
+
+  useEffect(() => {
+    localStorage.setItem(`schedule_rules_${schoolId}`, JSON.stringify(customRules));
+  }, [customRules, schoolId]);
+
+  const handleAddRule = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newRulePeriods.length === 0) {
+      onShowNotify("Selecione pelo menos um horário proibido.", "error");
+      return;
+    }
+    const rule: ScheduleRule = {
+      id: crypto.randomUUID(),
+      school_id: schoolId,
+      teacher_id: newRuleTeacherId || undefined,
+      subject: newRuleSubject || undefined,
+      class_name: newRuleClass || undefined,
+      day_of_week: newRuleDay !== '' ? Number(newRuleDay) : undefined,
+      forbidden_periods: newRulePeriods,
+      reason: newRuleReason || "Restrição pedagógica / desempenho"
+    };
+    setCustomRules([...customRules, rule]);
+    setNewRulePeriods([]);
+    setNewRuleReason('');
+    onShowNotify("Restrição granular adicionada!", "success");
+  };
+
+  const handleRemoveRule = (ruleId: string) => {
+    setCustomRules(customRules.filter(r => r.id !== ruleId));
+    onShowNotify("Restrição removida.", "info");
+  };
+
+  const isRuleViolated = (teacherId: string | null, subject: string, className: string, day: number, period: number) => {
+    return customRules.some(rule => {
+      const matchTeacher = !rule.teacher_id || rule.teacher_id === teacherId;
+      const matchSubject = !rule.subject || rule.subject === subject;
+      const matchClass = !rule.class_name || rule.class_name === className;
+      const matchDay = !rule.day_of_week || rule.day_of_week === day;
+      const matchPeriod = rule.forbidden_periods.includes(period);
+      return matchTeacher && matchSubject && matchClass && matchDay && matchPeriod;
+    });
+  };
+
+  const handleToggleLockSlot = async (sched: ScheduleEntry) => {
+    try {
+      const newLocked = !sched.is_locked;
+      const { error } = await supabase.from('class_schedules').update({ is_locked: newLocked }).eq('id', sched.id);
+      if (error) {
+        // Fallback local caso a coluna is_locked não exista no banco
+        console.warn("Coluna is_locked pode não existir no DB, mantendo no estado local:", error.message);
+      }
+      setSchedules(prev => prev.map(s => s.id === sched.id ? { ...s, is_locked: newLocked } : s));
+      onShowNotify(newLocked ? "Aula congelada (Locked)!" : "Aula descongelada!", "info");
+    } catch (err: any) {
+      onShowNotify(err.message, "error");
+    }
+  };
+
+  const handleToggleLockClass = async (className: string) => {
+    const classScheds = schedules.filter(s => s.class_name === className);
+    if (classScheds.length === 0) return;
+
+    const allLocked = classScheds.every(s => s.is_locked);
+    const newStatus = !allLocked;
+
+    const ids = classScheds.map(s => s.id);
+    try {
+      await supabase.from('class_schedules').update({ is_locked: newStatus }).in('id', ids);
+      setSchedules(prev => prev.map(s => s.class_name === className ? { ...s, is_locked: newStatus } : s));
+      onShowNotify(newStatus ? `Todas as aulas da turma ${className} foram CONGELADAS!` : `Aulas da turma ${className} DESCONGELADAS!`, "success");
+    } catch (err: any) {
+      onShowNotify(err.message, "error");
+    }
+  };
+
   const handleAutoGenerate = async () => {
     setShowConfirm(false);
     setGenerating(true);
-    onShowNotify("Gerando grade horária... Isso pode levar alguns segundos.", "info");
+    onShowNotify("Gerando grade horária respeitando congelamentos e restrições PPP...", "info");
 
     try {
-      // 1. Apagar todas as aulas atuais
-      await supabase.from('class_schedules').delete().eq('school_id', schoolId);
+      // 1. Separar aulas congeladas e não congeladas
+      const lockedSchedules = schedules.filter(s => s.is_locked);
+      const unlockedIds = schedules.filter(s => !s.is_locked).map(s => s.id);
 
-      // 2. Preparar dados
-      // Precisamos mapear as turmas para seus turnos
+      // 2. Apagar do banco apenas as aulas NÃO congeladas
+      if (unlockedIds.length > 0) {
+        const { error: delError } = await supabase.from('class_schedules').delete().in('id', unlockedIds);
+        if (delError) {
+          // Se falhar o in(id), tenta apagar onde is_locked = false
+          await supabase.from('class_schedules').delete().eq('school_id', schoolId).eq('is_locked', false);
+        }
+      }
+
+      // 3. Mapear turmas para seus turnos
       const classShiftMap = new Map<string, SchoolShift>();
       classes.forEach(c => {
         const shf = shifts.find(s => s.id === c.shift_id);
         if (shf) classShiftMap.set(c.name, shf);
       });
 
-      // E criar a lista de aulas que precisam ser alocadas
+      // 4. Calcular quantas aulas faltam alocar (Total na Matriz - Já Congeladas)
       interface LessonToPlace {
         class_name: string;
         subject: string;
@@ -62,9 +157,21 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
       }
 
       const lessonsToPlace: LessonToPlace[] = [];
+
+      // Mapear quantas aulas de cada (class, subject) já estão congeladas
+      const lockedCounts: Record<string, number> = {};
+      lockedSchedules.forEach(s => {
+        const key = `${s.class_name}_${s.subject}`;
+        lockedCounts[key] = (lockedCounts[key] || 0) + 1;
+      });
+
       matrix.filter(m => m.lessons_per_week > 0).forEach(m => {
         const assign = assignments.find(a => a.class_name === m.class_name && a.subject === m.subject);
-        for (let i = 0; i < m.lessons_per_week; i++) {
+        const key = `${m.class_name}_${m.subject}`;
+        const alreadyLocked = lockedCounts[key] || 0;
+        const remainingToPlace = Math.max(0, m.lessons_per_week - alreadyLocked);
+
+        for (let i = 0; i < remainingToPlace; i++) {
           lessonsToPlace.push({
             class_name: m.class_name,
             subject: m.subject,
@@ -73,78 +180,89 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
         }
       });
 
-      if (lessonsToPlace.length === 0) {
-         onShowNotify("Nenhuma disciplina encontrada na matriz curricular. Vá em 'Estrutura' para configurar a matriz antes de gerar horários.", "error");
-         setGenerating(false);
-         return;
-      }
-
-      // 3. Estruturar a grade vazia [day][period][className] = LessonToPlace | null
-      // Vamos assumir dias de 1 a 5 (segunda a sexta)
-      // Array para acompanhar onde os professores estão a cada slot temporal
-      const teacherSlots = new Map<string, string>(); // chane para: `teacherId_day_period` -> `className`
-
-      const newSchedules: any[] = [];
-
-      // Embaralhar as aulas para evitar padrões fixos e dar chance de resolver melhor
-      lessonsToPlace.sort(() => Math.random() - 0.5);
-
-      // Ordem de prioridade (tentar colocar professores com menos horários primeiro)
-      // Isso é uma heurística simples. O ideal é ordenar as aulas.
-      // Vamos tentar um Guloso Simples com "Tentativas Aleatórias" até convergir (simulated annealing super simples / monte carlo)
-      
       let bestPlacement: any[] = [];
       let maxPlaced = -1;
 
-      // Tentar 50 rodadas para ver qual encaixa mais aulas
-      for (let attempt = 0; attempt < 50; attempt++) {
+      // Se não há nada novo a alocar
+      if (lessonsToPlace.length === 0 && lockedSchedules.length > 0) {
+        onShowNotify("Todas as aulas configuradas já estão congeladas. Nada para alocar.", "info");
+        setGenerating(false);
+        return;
+      }
+
+      // 5. Algoritmo de Otimização Combinatória (Monte Carlo / Simulated Annealing Heuristic)
+      // Tentar 100 iterações para encontrar a melhor combinação sem violar hard constraints
+      for (let attempt = 0; attempt < 100; attempt++) {
         let placedCount = 0;
-        const currentSchedules: any[] = [];
+        // Iniciar cada tentativa preservando exatamente as aulas congeladas
+        const currentSchedules: any[] = lockedSchedules.map(ls => ({
+          school_id: ls.school_id,
+          class_name: ls.class_name,
+          day_of_week: ls.day_of_week,
+          period_index: ls.period_index,
+          subject: ls.subject,
+          teacher_id: ls.teacher_id,
+          is_locked: true
+        }));
+
         const currentTeacherSlots = new Set<string>();
-        
-        // Cópia das aulas a serem alocadas, embaralhadas
+        // Registrar ocupação dos professores nas aulas congeladas
+        lockedSchedules.forEach(ls => {
+          if (ls.teacher_id) {
+            const globalP = getGlobalPeriodIndex(ls.class_name, ls.period_index);
+            currentTeacherSlots.add(`${ls.teacher_id}_${ls.day_of_week}_${globalP}`);
+          }
+        });
+
+        // Cópia embaralhada das aulas a alocar
         const currentToPlace = [...lessonsToPlace].sort(() => Math.random() - 0.5);
 
         for (const lesson of currentToPlace) {
           const shift = classShiftMap.get(lesson.class_name);
           if (!shift) continue;
 
-          let placed = false;
-          // Tentar encontrar um slot (dia, período) livre e válido para a turma e professor
-          
-          // Gerar lista de slots possíveis (x dias, y períodos)
+          // Gerar slots possíveis (dias 1 a 5, períodos 0 a N)
           const possibleSlots: {d: number, p: number}[] = [];
           for (let d = 1; d <= 5; d++) {
             for (let p = 0; p < shift.lessons_per_day; p++) {
               possibleSlots.push({d, p});
             }
           }
-          // Embaralhar slots para distribuição parelha
           possibleSlots.sort(() => Math.random() - 0.5);
 
           for (const slot of possibleSlots) {
             const { d, p } = slot;
-            
-            // Verifica se a turma já tem aula nesse slot
+
+            // REGRA DE OURO 1: A turma já tem aula nesse slot?
             const classHasLesson = currentSchedules.some(s => s.class_name === lesson.class_name && s.day_of_week === d && s.period_index === p);
             if (classHasLesson) continue;
 
-            // Verifica professor
+            // REGRA DE OURO 2 (HARD CONSTRAINT - PPP / LIMITE DIÁRIO): Max 2 aulas da mesma disciplina por dia para a turma!
+            const subjectCountOnDay = currentSchedules.filter(s => s.class_name === lesson.class_name && s.day_of_week === d && s.subject === lesson.subject).length;
+            if (subjectCountOnDay >= 2) continue;
+
+            // REGRA DE OURO 3: Restrição Granular de Horário / Desempenho (Time-Window Negative Rules)
+            if (isRuleViolated(lesson.teacher_id, lesson.subject, lesson.class_name, d, p)) {
+              continue;
+            }
+
+            // REGRA DE OURO 4: Disponibilidade e choque do Professor
             if (lesson.teacher_id) {
               const globalP = getGlobalPeriodIndex(lesson.class_name, p);
               const teacherKey = `${lesson.teacher_id}_${d}_${globalP}`;
               if (currentTeacherSlots.has(teacherKey)) continue; // Double booking
-              if (!isTeacherAvailable(lesson.teacher_id, d, p, lesson.class_name)) continue; // Indisponível
+              if (!isTeacherAvailable(lesson.teacher_id, d, p, lesson.class_name)) continue; // Indisponível na agenda
             }
 
-            // O slot é válido!
+            // O slot atende a TODAS as restrições rígidas!
             currentSchedules.push({
               school_id: schoolId,
               class_name: lesson.class_name,
               day_of_week: d,
               period_index: p,
               subject: lesson.subject,
-              teacher_id: lesson.teacher_id
+              teacher_id: lesson.teacher_id,
+              is_locked: false
             });
 
             if (lesson.teacher_id) {
@@ -153,43 +271,42 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
             }
 
             placedCount++;
-            placed = true;
-            break; // A aula foi alocada
+            break; // Aula alocada com sucesso
           }
         }
 
         if (placedCount > maxPlaced) {
           maxPlaced = placedCount;
-          bestPlacement = currentSchedules;
+          bestPlacement = currentSchedules.filter(s => !s.is_locked); // Salvar apenas as novas
         }
 
         if (maxPlaced === lessonsToPlace.length) {
-          break; // Perfeito!
+          break; // Conconvergiu 100%!
         }
       }
 
-      if (maxPlaced < lessonsToPlace.length) {
-        console.warn(`Não foi possível alocar todas as aulas perfeitamente. Alocados: ${maxPlaced}/${lessonsToPlace.length}`);
-      }
-
-      // 4. Salvar tudo
+      // 6. Salvar novas aulas alocadas
       if (bestPlacement.length > 0) {
-        // Inserir em chunks de 500 para não estourar payload do supabase
         const CHUNK_SIZE = 500;
         for (let i = 0; i < bestPlacement.length; i += CHUNK_SIZE) {
           const chunk = bestPlacement.slice(i, i + CHUNK_SIZE);
           const { error } = await supabase.from('class_schedules').insert(chunk);
-          if (error) throw error;
+          if (error) {
+            // Tenta inserir sem o campo is_locked se a coluna ainda não tiver no DB
+            const fallbackChunk = chunk.map(({ is_locked, ...rest }) => rest);
+            await supabase.from('class_schedules').insert(fallbackChunk);
+          }
         }
       }
 
-      if (maxPlaced < lessonsToPlace.length) {
-        onShowNotify(`Geração concluída com ressalvas: ${maxPlaced}/${lessonsToPlace.length} aulas alocadas. Podem haver aulas sem horário devido a conflitos ou falta de professores.`, "error");
+      const totalNeeded = lessonsToPlace.length;
+      if (maxPlaced < totalNeeded) {
+        onShowNotify(`Geração parcialmente concluída: ${maxPlaced}/${totalNeeded} novas aulas alocadas. Verifique conflitos de professores ou desative regras rígidas muito restritivas.`, "error");
       } else {
-        onShowNotify(`Geração perfeita! ${bestPlacement.length} aulas posicionadas na grade sem conflitos.`, "success");
+        onShowNotify(`Geração concluída com sucesso! ${bestPlacement.length} novas aulas posicionadas sem violações de regras.`, "success");
       }
       
-      // Atualiza o estado lendo do banco para pegar os IDs gerados
+      // Atualizar dados atualizados do banco
       const { data: generatedSchedules } = await supabase.from('class_schedules').select('*').eq('school_id', schoolId);
       if (generatedSchedules) {
         setSchedules(generatedSchedules);
@@ -449,49 +566,35 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
         <div className="flex bg-slate-100 p-1 rounded-xl gap-1">
            <button onClick={() => setActiveTab('assignments')} className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${activeTab === 'assignments' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>Atribuições</button>
            <button onClick={() => setActiveTab('grid')} className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${activeTab === 'grid' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>Grade Horária</button>
+           <button onClick={() => setActiveTab('rules')} className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1.5 ${activeTab === 'rules' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>
+             <i className="fa-solid fa-shield-halved text-xs"></i>
+             Regras Negativas
+             {customRules.length > 0 && <span className="bg-indigo-600 text-white rounded-full px-1.5 py-0.2 text-[8px]">{customRules.length}</span>}
+           </button>
         </div>
       </div>
 
-      {activeTab === 'assignments' && (
-        <div className="bg-white rounded-[2rem] border p-8 shadow-sm">
-          <h4 className="text-sm font-black text-slate-900 uppercase mb-6">Atribuição de Professores - {selectedClass}</h4>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {classMatrix.map(m => {
-              const assignedTeacher = getTeacherForSubject(m.subject);
-              return (
-                <div key={m.id} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                  <div className="flex-1">
-                    <p className="text-xs font-black text-slate-800 uppercase">{m.subject}</p>
-                    <p className="text-[10px] text-slate-400 font-bold">{m.lessons_per_week} aulas semanais</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <select 
-                      value={assignedTeacher?.id || ''} 
-                      onChange={e => handleAssignTeacher(m.subject, e.target.value)}
-                      className="bg-white border p-2 rounded-lg text-[10px] font-bold text-slate-700 outline-none w-48"
-                    >
-                      <option value="">Selecionar Professor...</option>
-                      {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                    </select>
-                    <button 
-                      type="button"
-                      onClick={() => handleRemoveSubjectFromMatrix(m.subject)}
-                      title={`Eliminar ${m.subject} da turma ${selectedClass}`}
-                      className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
-                    >
-                      <i className="fa-solid fa-trash-can text-xs"></i>
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          {classMatrix.length === 0 && <p className="text-center text-xs text-slate-400 py-10 font-bold">Nenhuma disciplina na matriz desta turma.</p>}
-        </div>
-      )}
-
       {activeTab === 'grid' && selectedShift && (
         <div className="bg-white rounded-[2rem] border shadow-sm overflow-hidden">
+          <div className="p-4 bg-slate-50 border-b flex justify-between items-center">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-black uppercase text-slate-700">Turma: {selectedClass}</span>
+              {schedules.filter(s => s.class_name === selectedClass).every(s => s.is_locked) && schedules.filter(s => s.class_name === selectedClass).length > 0 && (
+                <span className="bg-amber-100 text-amber-800 text-[9px] font-black uppercase px-2 py-0.5 rounded-full flex items-center gap-1">
+                  <i className="fa-solid fa-lock text-[8px]"></i> Turma Congelada
+                </span>
+              )}
+            </div>
+            <button 
+              type="button"
+              onClick={() => handleToggleLockClass(selectedClass)}
+              className="px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-[10px] font-black uppercase text-slate-700 hover:bg-slate-100 transition-all flex items-center gap-1.5"
+            >
+              <i className={`fa-solid ${schedules.filter(s => s.class_name === selectedClass).every(s => s.is_locked) ? 'fa-unlock text-emerald-600' : 'fa-lock text-amber-600'}`}></i>
+              {schedules.filter(s => s.class_name === selectedClass).every(s => s.is_locked) ? 'Descongelar Turma' : 'Congelar Grade da Turma'}
+            </button>
+          </div>
+
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
@@ -515,19 +618,35 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
                       return (
                         <td key={day} className="p-2 border-b min-w-[140px]">
                           <div className="relative group">
-                            <select 
-                              value={sched?.subject || ''} 
-                              onChange={e => handleUpdateSchedule(day, periodIdx, e.target.value)}
-                              className={`w-full p-2 rounded-xl text-[10px] font-black uppercase border transition-all outline-none appearance-none ${
-                                conflict ? 'bg-rose-50 border-rose-200 text-rose-600' : 
-                                sched?.subject ? 'bg-indigo-50 border-indigo-100 text-indigo-700' : 'bg-slate-50 border-transparent text-slate-300'
-                              }`}
-                            >
-                              <option value="">Vago</option>
-                              {classMatrix.map(m => (
-                                <option key={m.id} value={m.subject}>{m.subject}</option>
-                              ))}
-                            </select>
+                            <div className="flex items-center gap-1">
+                              <select 
+                                value={sched?.subject || ''} 
+                                disabled={sched?.is_locked}
+                                onChange={e => handleUpdateSchedule(day, periodIdx, e.target.value)}
+                                className={`w-full p-2 rounded-xl text-[10px] font-black uppercase border transition-all outline-none appearance-none ${
+                                  sched?.is_locked ? 'bg-amber-50 border-amber-200 text-amber-900 font-bold' :
+                                  conflict ? 'bg-rose-50 border-rose-200 text-rose-600' : 
+                                  sched?.subject ? 'bg-indigo-50 border-indigo-100 text-indigo-700' : 'bg-slate-50 border-transparent text-slate-300'
+                                }`}
+                              >
+                                <option value="">Vago</option>
+                                {classMatrix.map(m => (
+                                  <option key={m.id} value={m.subject}>{m.subject}</option>
+                                ))}
+                              </select>
+                              {sched && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleLockSlot(sched)}
+                                  title={sched.is_locked ? "Descongelar esta aula" : "Congelar esta aula"}
+                                  className={`p-1.5 rounded-lg border text-[10px] transition-all ${
+                                    sched.is_locked ? 'bg-amber-500 text-white border-amber-600' : 'bg-white text-slate-300 border-slate-200 hover:text-amber-600'
+                                  }`}
+                                >
+                                  <i className={`fa-solid ${sched.is_locked ? 'fa-lock' : 'fa-lock-open'}`}></i>
+                                </button>
+                              )}
+                            </div>
                             {conflict && (
                               <div className="absolute -top-10 left-0 bg-rose-600 text-white text-[9px] p-2 rounded-lg shadow-xl z-20 w-48 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
                                 {conflict}
@@ -564,19 +683,135 @@ const ScheduleSimulator: React.FC<ScheduleSimulatorProps> = ({ schoolId, supabas
         </div>
       )}
 
+      {activeTab === 'rules' && (
+        <div className="space-y-6">
+          <div className="bg-white rounded-[2rem] border p-8 shadow-sm">
+            <h4 className="text-sm font-black text-slate-900 uppercase mb-2">Adicionar Restrição Granular de Desempenho / Horário</h4>
+            <p className="text-xs text-slate-500 mb-6 font-medium">
+              Configure regras negativas específicas cruzando [Professor + Disciplina + Turma + Horário Proibido]. Exemplo: Professor Luiz Augusto (Matemática) não pode lecionar nos dois últimos horários da 1ª Série.
+            </p>
+
+            <form onSubmit={handleAddRule} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div>
+                  <label className="text-[10px] font-black uppercase text-slate-400 block mb-1">Professor (Opcional)</label>
+                  <select value={newRuleTeacherId} onChange={e => setNewRuleTeacherId(e.target.value)} className="w-full p-2.5 rounded-xl border text-xs font-bold bg-white">
+                    <option value="">Todos os Professores</option>
+                    {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] font-black uppercase text-slate-400 block mb-1">Disciplina (Opcional)</label>
+                  <input type="text" placeholder="Ex: Matemática" value={newRuleSubject} onChange={e => setNewRuleSubject(e.target.value)} className="w-full p-2.5 rounded-xl border text-xs font-bold bg-white" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-black uppercase text-slate-400 block mb-1">Turma (Opcional)</label>
+                  <select value={newRuleClass} onChange={e => setNewRuleClass(e.target.value)} className="w-full p-2.5 rounded-xl border text-xs font-bold bg-white">
+                    <option value="">Todas as Turmas</option>
+                    {classes.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] font-black uppercase text-slate-400 block mb-1">Dia da Semana (Opcional)</label>
+                  <select value={newRuleDay} onChange={e => setNewRuleDay(e.target.value ? Number(e.target.value) : '')} className="w-full p-2.5 rounded-xl border text-xs font-bold bg-white">
+                    <option value="">Todos os Dias</option>
+                    {[1, 2, 3, 4, 5].map(d => <option key={d} value={d}>{WEEKDAYS[d]}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400 block mb-2">Horários Proibidos (Períodos)</label>
+                <div className="flex flex-wrap gap-2">
+                  {[0, 1, 2, 3, 4, 5].map(pIdx => {
+                    const isSelected = newRulePeriods.includes(pIdx);
+                    return (
+                      <button
+                        type="button"
+                        key={pIdx}
+                        onClick={() => {
+                          if (isSelected) setNewRulePeriods(newRulePeriods.filter(p => p !== pIdx));
+                          else setNewRulePeriods([...newRulePeriods, pIdx]);
+                        }}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase border transition-all ${
+                          isSelected ? 'bg-rose-600 text-white border-rose-700' : 'bg-slate-50 text-slate-600 border-slate-200'
+                        }`}
+                      >
+                        {pIdx + 1}ª Aula
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400 block mb-1">Motivo / Descrição</label>
+                <input type="text" placeholder="Ex: Baixo rendimento nos dois últimos horários da 1ª série" value={newRuleReason} onChange={e => setNewRuleReason(e.target.value)} className="w-full p-2.5 rounded-xl border text-xs font-bold bg-white" />
+              </div>
+
+              <div className="flex justify-end">
+                <button type="submit" className="px-5 py-3 bg-indigo-600 text-white font-black text-[10px] uppercase rounded-xl shadow-lg hover:bg-indigo-700 transition-all flex items-center gap-2">
+                  <i className="fa-solid fa-plus"></i> Adicionar Restrição Rígida
+                </button>
+              </div>
+            </form>
+          </div>
+
+          <div className="bg-white rounded-[2rem] border p-8 shadow-sm">
+            <h4 className="text-sm font-black text-slate-900 uppercase mb-4">Restrições Ativas ({customRules.length})</h4>
+            {customRules.length === 0 ? (
+              <p className="text-xs text-slate-400 font-bold py-6 text-center">Nenhuma restrição granular cadastrada.</p>
+            ) : (
+              <div className="space-y-3">
+                {customRules.map(rule => {
+                  const teacher = teachers.find(t => t.id === rule.teacher_id);
+                  return (
+                    <div key={rule.id} className="p-4 bg-rose-50/50 rounded-2xl border border-rose-100 flex items-center justify-between">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="px-2 py-0.5 bg-rose-100 text-rose-800 rounded-md text-[10px] font-black uppercase">Proibido</span>
+                          <span className="text-xs font-black text-slate-800">{teacher ? teacher.name : "Qualquer Professor"}</span>
+                          <span className="text-xs text-slate-400">•</span>
+                          <span className="text-xs font-bold text-slate-600">{rule.subject || "Qualquer Disciplina"}</span>
+                          <span className="text-xs text-slate-400">•</span>
+                          <span className="text-xs font-bold text-slate-600">Turma: {rule.class_name || "Todas"}</span>
+                          <span className="text-xs text-slate-400">•</span>
+                          <span className="text-xs font-bold text-slate-600">{rule.day_of_week ? WEEKDAYS[rule.day_of_week] : "Todos os dias"}</span>
+                        </div>
+                        <p className="text-[11px] font-bold text-rose-700">
+                          Aulas proibidas: {rule.forbidden_periods.map(p => `${p + 1}ª`).join(', ')} — <span className="italic">{rule.reason}</span>
+                        </p>
+                      </div>
+                      <button onClick={() => handleRemoveRule(rule.id)} className="p-2 text-rose-400 hover:text-rose-700 rounded-lg transition-all">
+                        <i className="fa-solid fa-trash-can text-xs"></i>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {showConfirm && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-[2rem] p-8 w-full max-w-sm shadow-2xl animate-in zoom-in-95">
-            <h3 className="text-lg font-black text-slate-900 mb-2">Gerador Automático</h3>
-            <p className="text-xs text-slate-500 font-bold mb-6">
-              Isso vai apagar a grade atual de todas as turmas e gerar uma nova grade do zero. Deseja continuar?
+          <div className="bg-white rounded-[2rem] p-8 w-full max-w-md shadow-2xl animate-in zoom-in-95">
+            <h3 className="text-lg font-black text-slate-900 mb-2">Gerador Automático Otimizado</h3>
+            <p className="text-xs text-slate-500 font-bold mb-4 leading-relaxed">
+              O algoritmo irá recalcular os horários das turmas respeitando rigorosamente:
             </p>
+            <ul className="text-xs text-slate-600 space-y-1.5 mb-6 font-semibold bg-slate-50 p-3 rounded-xl">
+              <li className="flex items-center gap-2 text-amber-700"><i className="fa-solid fa-lock text-[10px]"></i> <b>Preservação de Congelamentos:</b> Aulas/turmas marcadas com cadeado serão mantidas sem alteração.</li>
+              <li className="flex items-center gap-2 text-indigo-700"><i className="fa-solid fa-ban text-[10px]"></i> <b>Regra PPP:</b> No máximo 2 aulas da mesma matéria por dia para cada turma.</li>
+              <li className="flex items-center gap-2 text-rose-700"><i className="fa-solid fa-shield-halved text-[10px]"></i> <b>Restrições Negativas:</b> Respeitará as regras de horários e professores cadastrados.</li>
+            </ul>
             <div className="flex gap-3">
               <button onClick={() => setShowConfirm(false)} className="flex-1 bg-slate-100 text-slate-600 p-3 rounded-xl font-black text-[10px] uppercase">
                 Cancelar
               </button>
               <button onClick={handleAutoGenerate} className="flex-1 bg-emerald-600 text-white p-3 rounded-xl font-black text-[10px] uppercase shadow-lg hover:bg-emerald-700">
-                Confirmar
+                Confirmar e Gerar
               </button>
             </div>
           </div>

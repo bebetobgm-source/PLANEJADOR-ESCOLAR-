@@ -126,7 +126,19 @@ export interface ScheduleEntry {
   period_index: number; // 0 = 1ª Aula
   subject: string;
   teacher_id?: string;
+  is_locked?: boolean;
   created_at?: string;
+}
+
+export interface ScheduleRule {
+  id: string;
+  school_id: string;
+  teacher_id?: string;
+  subject?: string;
+  class_name?: string;
+  day_of_week?: number; // 1-5, or null for all days
+  forbidden_periods: number[]; // e.g. [3, 4] for 4th and 5th periods
+  reason?: string;
 }
 
 export interface TeacherAssignment {

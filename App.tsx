@@ -132,6 +132,7 @@ create table if not exists class_schedules (
   period_index int not null,
   subject text,
   teacher_id uuid references school_teachers(id) on delete set null,
+  is_locked boolean default false,
   created_at timestamptz default now()
 );
 
